@@ -60,8 +60,25 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Si el empleado aún no tiene dispositivo, verificar que el dispositivo no pertenezca a otro empleado
+    if (!deviceRegistrado) {
+      const { data: otroEmpleado } = await supabase
+        .from('empleados')
+        .select('id')
+        .eq('device_id', deviceId)
+        .neq('id', user.id)
+        .maybeSingle()
+
+      if (otroEmpleado) {
+        return NextResponse.json(
+          { error: 'Este dispositivo ya está registrado a otro empleado. Contactá a tu administrador.' },
+          { status: 403 }
+        )
+      }
+    }
+
     // 5. Validar geofencing
-    const sucursal = empleado.sucursales as {
+    const sucursal = empleado.sucursales as unknown as {
       id: string; nombre: string
       latitud: number | null; longitud: number | null; radio_metros: number
     } | null
