@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
 import { calcularExtra } from '@/lib/reglas/calcularExtra'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
@@ -61,8 +61,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Si el empleado aún no tiene dispositivo, verificar que el dispositivo no pertenezca a otro empleado
+    // Se usa adminClient para evitar que RLS oculte registros de otros empleados
     if (!deviceRegistrado) {
-      const { data: otroEmpleado } = await supabase
+      const adminClient = createAdminClient()
+      const { data: otroEmpleado } = await adminClient
         .from('empleados')
         .select('id')
         .eq('device_id', deviceId)
