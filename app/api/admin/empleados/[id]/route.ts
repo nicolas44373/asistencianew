@@ -22,7 +22,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const body = await request.json()
-    const { nombre, apellido, dni, sucursal_id, rol, activo, sueldo, resetPassword, nuevaPassword, resetDevice } = body
+    const { nombre, apellido, dni, sucursal_id, rol, activo, sueldo, resetDevice, resetPassword, nuevaPassword } = body
 
     const adminClient = createAdminClient()
 
@@ -31,15 +31,27 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       sueldo: sueldo !== '' && sueldo != null ? Number(sueldo) : null,
     }
 
-    // Si es empleado, actualizar el DNI y el email sintético en Auth
     if (rol === 'empleado' && dni?.trim()) {
-      updateData.dni = dni.trim()
-
-      const nuevoEmail = `${dni.trim()}@empleado.local`
-      const { error: emailErr } = await adminClient.auth.admin.updateUserById(params.id, {
-        email: nuevoEmail,
+      // Empleados: DNI es la credencial → actualizar email sintético y contraseña
+      const dniTrim = dni.trim()
+      updateData.dni = dniTrim
+      const { error: authErr } = await adminClient.auth.admin.updateUserById(params.id, {
+        email:    `${dniTrim}@empleado.local`,
+        password: dniTrim,
       })
-      if (emailErr) return NextResponse.json({ error: emailErr.message }, { status: 500 })
+      if (authErr) return NextResponse.json({ error: authErr.message }, { status: 500 })
+    }
+
+    if (rol === 'admin' && resetPassword && nuevaPassword) {
+      // Admins: actualizar contraseña manualmente
+      const { error: pwdErr } = await adminClient.auth.admin.updateUserById(params.id, {
+        password: nuevaPassword,
+      })
+      if (pwdErr) return NextResponse.json({ error: pwdErr.message }, { status: 500 })
+    }
+
+    if (resetDevice) {
+      updateData.device_id = null
     }
 
     const { error: empErr } = await adminClient
@@ -48,17 +60,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       .eq('id', params.id)
 
     if (empErr) return NextResponse.json({ error: empErr.message }, { status: 500 })
-
-    if (resetDevice) {
-      updateData.device_id = null
-    }
-
-    if (resetPassword && nuevaPassword) {
-      const { error: pwdErr } = await adminClient.auth.admin.updateUserById(params.id, {
-        password: nuevaPassword,
-      })
-      if (pwdErr) return NextResponse.json({ error: pwdErr.message }, { status: 500 })
-    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

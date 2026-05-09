@@ -20,6 +20,7 @@ export interface HorarioSucursal {
   hora_salida: string
   umbral_extra: string
   tolerancia_min: number
+  es_sabado: boolean
 }
 
 export interface Empleado {

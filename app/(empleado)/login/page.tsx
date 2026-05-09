@@ -22,22 +22,14 @@ export default function LoginPage() {
     setError(null)
     setLoading(true)
 
-    // Empleados usan email sintético basado en su DNI
-    const emailAuth = tab === 'empleado'
-      ? `${dni.trim()}@empleado.local`
-      : email.trim()
+    const credentials = tab === 'empleado'
+      ? { email: `${dni.trim()}@empleado.local`, password: dni.trim() }
+      : { email: email.trim(), password }
 
-    const { error: authError } = await supabase.auth.signInWithPassword({
-      email: emailAuth,
-      password,
-    })
+    const { error: authError } = await supabase.auth.signInWithPassword(credentials)
 
     if (authError) {
-      setError(
-        tab === 'empleado'
-          ? 'DNI o contraseña incorrectos'
-          : 'Email o contraseña incorrectos'
-      )
+      setError(tab === 'empleado' ? 'DNI incorrecto o empleado inactivo' : 'Email o contraseña incorrectos')
       setLoading(false)
       return
     }
@@ -46,23 +38,15 @@ export default function LoginPage() {
     if (!user) { setLoading(false); return }
 
     const { data: empleado } = await supabase
-      .from('empleados')
-      .select('rol')
-      .eq('id', user.id)
-      .single()
+      .from('empleados').select('rol').eq('id', user.id).single()
 
-    if (empleado?.rol === 'admin') {
-      router.replace('/dashboard')
-    } else {
-      router.replace('/fichar')
-    }
+    router.replace(empleado?.rol === 'admin' ? '/dashboard' : '/fichar')
   }
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-blue-700 px-6 safe-top safe-bottom">
       <div className="w-full max-w-sm">
 
-        {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-20 h-20 bg-white rounded-full mb-4 shadow-lg">
             <svg className="w-10 h-10 text-blue-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -79,9 +63,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setTab('empleado'); setError(null) }}
             className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === 'empleado'
-                ? 'bg-white text-blue-700 shadow'
-                : 'text-blue-200 hover:text-white'
+              tab === 'empleado' ? 'bg-white text-blue-700 shadow' : 'text-blue-200 hover:text-white'
             }`}
           >
             Empleado
@@ -90,9 +72,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setTab('admin'); setError(null) }}
             className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === 'admin'
-                ? 'bg-white text-blue-700 shadow'
-                : 'text-blue-200 hover:text-white'
+              tab === 'admin' ? 'bg-white text-blue-700 shadow' : 'text-blue-200 hover:text-white'
             }`}
           >
             Administrador
@@ -102,9 +82,7 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {tab === 'empleado' ? (
             <div>
-              <label htmlFor="dni" className="block text-sm font-medium text-blue-100 mb-1">
-                DNI
-              </label>
+              <label htmlFor="dni" className="block text-sm font-medium text-blue-100 mb-1">DNI</label>
               <input
                 id="dni"
                 type="text"
@@ -119,40 +97,37 @@ export default function LoginPage() {
               />
             </div>
           ) : (
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-blue-100 mb-1">
-                Email
-              </label>
-              <input
-                id="email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-white/10 text-white placeholder-blue-300
-                           border border-blue-400 focus:outline-none focus:ring-2 focus:ring-white text-base"
-                placeholder="admin@gmail.com"
-              />
-            </div>
+            <>
+              <div>
+                <label htmlFor="email" className="block text-sm font-medium text-blue-100 mb-1">Email</label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-white/10 text-white placeholder-blue-300
+                             border border-blue-400 focus:outline-none focus:ring-2 focus:ring-white text-base"
+                  placeholder="admin@gmail.com"
+                />
+              </div>
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-blue-100 mb-1">Contraseña</label>
+                <input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-white/10 text-white placeholder-blue-300
+                             border border-blue-400 focus:outline-none focus:ring-2 focus:ring-white text-base"
+                  placeholder="••••••••"
+                />
+              </div>
+            </>
           )}
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-blue-100 mb-1">
-              Contraseña
-            </label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl bg-white/10 text-white placeholder-blue-300
-                         border border-blue-400 focus:outline-none focus:ring-2 focus:ring-white text-base"
-              placeholder="••••••••"
-            />
-          </div>
 
           {error && (
             <p className="text-red-300 text-sm text-center bg-red-900/30 rounded-lg px-3 py-2">

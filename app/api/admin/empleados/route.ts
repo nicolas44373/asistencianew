@@ -22,31 +22,34 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { nombre, apellido, dni, email, password, sucursal_id, rol, sueldo } = body
 
-    if (!nombre || !apellido || !password || !sucursal_id) {
+    if (!nombre || !apellido || !sucursal_id) {
       return NextResponse.json({ error: 'Campos incompletos' }, { status: 400 })
     }
 
     const rolFinal = rol ?? 'empleado'
 
-    // Empleados: email sintético basado en DNI. Admins: email real (Gmail).
     let emailAuth: string
+    let passwordAuth: string
+    let dniGuardar: string | null = null
+
     if (rolFinal === 'empleado') {
-      if (!dni?.trim()) {
-        return NextResponse.json({ error: 'El DNI es obligatorio para empleados' }, { status: 400 })
-      }
-      emailAuth = `${dni.trim()}@empleado.local`
+      if (!dni?.trim()) return NextResponse.json({ error: 'El DNI es obligatorio' }, { status: 400 })
+      const dniTrim  = dni.trim()
+      emailAuth      = `${dniTrim}@empleado.local`
+      passwordAuth   = dniTrim
+      dniGuardar     = dniTrim
     } else {
-      if (!email?.trim()) {
-        return NextResponse.json({ error: 'El email es obligatorio para admins' }, { status: 400 })
-      }
-      emailAuth = email.trim()
+      if (!email?.trim()) return NextResponse.json({ error: 'El email es obligatorio para admins' }, { status: 400 })
+      if (!password)      return NextResponse.json({ error: 'La contraseña es obligatoria para admins' }, { status: 400 })
+      emailAuth    = email.trim()
+      passwordAuth = password
     }
 
     const adminClient = createAdminClient()
 
     const { data: newUser, error: authErr } = await adminClient.auth.admin.createUser({
-      email: emailAuth,
-      password,
+      email:         emailAuth,
+      password:      passwordAuth,
       email_confirm: true,
     })
 
@@ -60,7 +63,7 @@ export async function POST(request: NextRequest) {
         id:          newUser.user.id,
         nombre,
         apellido,
-        dni:         rolFinal === 'empleado' ? dni.trim() : null,
+        dni:         dniGuardar,
         sucursal_id,
         rol:         rolFinal,
         sueldo:      sueldo ? Number(sueldo) : null,

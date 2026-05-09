@@ -16,8 +16,8 @@ type FormMode = 'crear' | 'editar' | null
 interface FormData {
   nombre: string
   apellido: string
-  dni: string        // empleados
-  email: string      // admins
+  dni: string
+  email: string
   password: string
   sucursal_id: string
   rol: 'empleado' | 'admin'
@@ -201,7 +201,6 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                   onChange={v => f('apellido', v)} required />
               </div>
 
-              {/* Rol — mostrar antes para condicionar los campos de acceso */}
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Rol</label>
                 <select
@@ -214,33 +213,8 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                 </select>
               </div>
 
-              {/* Credenciales de acceso */}
-              {mode === 'crear' && (
-                <>
-                  {form.rol === 'empleado' ? (
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">DNI</label>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={form.dni}
-                        onChange={e => f('dni', e.target.value.replace(/\D/g, ''))}
-                        required
-                        placeholder="Ej: 40123456"
-                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  ) : (
-                    <Field label="Email (Gmail)" type="email" value={form.email}
-                      onChange={v => f('email', v)} required />
-                  )}
-                  <Field label="Contraseña inicial" type="password" value={form.password}
-                    onChange={v => f('password', v)} required />
-                </>
-              )}
-
-              {/* Editar DNI de empleado existente */}
-              {mode === 'editar' && form.rol === 'empleado' && (
+              {/* Credenciales según rol */}
+              {form.rol === 'empleado' ? (
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">DNI</label>
                   <input
@@ -248,10 +222,22 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     inputMode="numeric"
                     value={form.dni}
                     onChange={e => f('dni', e.target.value.replace(/\D/g, ''))}
+                    required
                     placeholder="Ej: 40123456"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                  <p className="text-xs text-gray-400 mt-0.5">El empleado ingresa solo con su DNI</p>
                 </div>
+              ) : (
+                <>
+                  <Field label="Email" type="email" value={form.email}
+                    onChange={v => f('email', v)}
+                    required={mode === 'crear'} placeholder="admin@gmail.com" />
+                  {mode === 'crear' && (
+                    <Field label="Contraseña" type="password" value={form.password}
+                      onChange={v => f('password', v)} required />
+                  )}
+                </>
               )}
 
               <div>
@@ -301,20 +287,23 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     Empleado activo
                   </label>
 
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={form.resetPassword}
-                      onChange={e => f('resetPassword', e.target.checked)}
-                      className="rounded"
-                    />
-                    Cambiar contraseña
-                  </label>
-
-                  {form.resetPassword && (
-                    <Field label="Nueva contraseña" type="password"
-                      value={form.nuevaPassword}
-                      onChange={v => f('nuevaPassword', v)} required />
+                  {form.rol === 'admin' && (
+                    <>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={form.resetPassword}
+                          onChange={e => f('resetPassword', e.target.checked)}
+                          className="rounded"
+                        />
+                        Cambiar contraseña
+                      </label>
+                      {form.resetPassword && (
+                        <Field label="Nueva contraseña" type="password"
+                          value={form.nuevaPassword}
+                          onChange={v => f('nuevaPassword', v)} required />
+                      )}
+                    </>
                   )}
 
                   {form.rol === 'empleado' && (

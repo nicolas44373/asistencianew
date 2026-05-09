@@ -212,7 +212,17 @@ function detectarTurnoActivo(ahora: Date, horarios: HorarioSucursal[]): HorarioS
   })
   const ahoraMin = horaStrAMinutos(localStr)
 
-  for (const h of horarios) {
+  // Determinar si hoy es sábado en horario local de Argentina
+  const localDate = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
+  const esSabado  = localDate.getDay() === 6
+
+  // En sábado: usar filas es_sabado=true si existen; si no, caer a las de lunes-viernes
+  const sabadoRows = horarios.filter(h => h.es_sabado)
+  const horariosDelDia = esSabado && sabadoRows.length > 0
+    ? sabadoRows
+    : horarios.filter(h => !h.es_sabado)
+
+  for (const h of horariosDelDia) {
     const inicio = horaStrAMinutos(h.hora_entrada) - 60
     const fin    = horaStrAMinutos(h.umbral_extra)  + 60
     if (ahoraMin >= inicio && ahoraMin <= fin) return h
