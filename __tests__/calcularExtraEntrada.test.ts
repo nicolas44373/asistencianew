@@ -52,21 +52,41 @@ describe('calcularExtraEntrada — Juramento (entrada 07:00, tolerancia 0)', () 
   })
 })
 
-// Escenario completo: llega 8:00, se va 13:30, turno JBJ mañana → 30 min
-describe('Escenario completo — JBJ mañana entrada 08:00 salida 13:30', () => {
-  it('entra 08:00, sale 13:30 → 30 min de extra en total', () => {
-    const horario = {
-      hora_entrada:  '08:15',
-      hora_salida:   '13:30',
-      umbral_extra:  '13:30',
-      tolerancia_min: 15,
-    }
+// Escenario completo con valores reales JBJ (umbral_extra = hora_salida + 30 min)
+describe('Escenario completo — JBJ mañana (hora_salida 13:30, umbral_extra 14:00)', () => {
+  const horario = {
+    hora_entrada:   '08:15',
+    hora_salida:    '13:30',
+    umbral_extra:   '14:00',
+    tolerancia_min: 15,
+  }
 
+  it('entra 08:00, sale 13:30 → 30 min de extra en total', () => {
     const extraEntrada = calcularExtraEntrada(local('08:00'), horario)
     const extraSalida  = calcularExtra(local('13:30'), horario)
-
-    expect(extraEntrada).toBe(30) // 08:30 − 08:00
-    expect(extraSalida).toBe(0)   // sale exactamente a la hora
+    expect(extraEntrada).toBe(30)
+    expect(extraSalida).toBe(0)
     expect(extraEntrada + extraSalida).toBe(30)
+  })
+
+  it('entra 08:15, sale 13:30 → 0 min de extra en total', () => {
+    const extraEntrada = calcularExtraEntrada(local('08:15'), horario)
+    const extraSalida  = calcularExtra(local('13:30'), horario)
+    expect(extraEntrada).toBe(0)
+    expect(extraSalida).toBe(0)
+    expect(extraEntrada + extraSalida).toBe(0)
+  })
+
+  it('entra 08:15, sale 13:45 → 0 min (salida tardía sin umbral)', () => {
+    const extraSalida = calcularExtra(local('13:45'), horario)
+    expect(extraSalida).toBe(0)
+  })
+
+  it('entra 08:00, sale 14:00 → 60 min de extra (30 entrada + 30 salida)', () => {
+    const extraEntrada = calcularExtraEntrada(local('08:00'), horario)
+    const extraSalida  = calcularExtra(local('14:00'), horario)
+    expect(extraEntrada).toBe(30)
+    expect(extraSalida).toBe(30)
+    expect(extraEntrada + extraSalida).toBe(60)
   })
 })

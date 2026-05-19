@@ -10,14 +10,15 @@ function local(dateStr: string, hora: string): Date {
 
 const DIA = '2024-01-15'
 
-describe('calcularExtra — Juan B. Justo turno mañana (salida 13:30, umbral 13:30)', () => {
+// Caso con umbral = hora_salida (sin período de gracia)
+describe('calcularExtra — umbral igual a hora_salida (sin período de gracia)', () => {
   const horario = { hora_salida: '13:30', umbral_extra: '13:30' }
 
-  it('Salida 13:20 → 0 min (antes del fin de turno)', () => {
+  it('Salida 13:20 → 0 min', () => {
     expect(calcularExtra(local(DIA, '13:20'), horario)).toBe(0)
   })
 
-  it('Salida 13:29 → 0 min (1 min antes del fin de turno)', () => {
+  it('Salida 13:29 → 0 min', () => {
     expect(calcularExtra(local(DIA, '13:29'), horario)).toBe(0)
   })
 
@@ -36,9 +37,30 @@ describe('calcularExtra — Juan B. Justo turno mañana (salida 13:30, umbral 13
   it('Salida 14:20 → 50 min (14:20 − 13:30)', () => {
     expect(calcularExtra(local(DIA, '14:20'), horario)).toBe(50)
   })
+})
 
-  it('Salida 15:00 → 90 min (15:00 − 13:30)', () => {
-    expect(calcularExtra(local(DIA, '15:00'), horario)).toBe(90)
+// Caso JBJ real: umbral_extra = hora_salida + 30 min (mínimo 30 min para contar)
+describe('calcularExtra — JBJ mañana (hora_salida 13:30, umbral_extra 14:00 → mínimo 30 min)', () => {
+  const horario = { hora_salida: '13:30', umbral_extra: '14:00' }
+
+  it('Salida 13:30 → 0 min (a tiempo)', () => {
+    expect(calcularExtra(local(DIA, '13:30'), horario)).toBe(0)
+  })
+
+  it('Salida 13:45 → 0 min (15 min tarde, no alcanza el umbral de 30 min)', () => {
+    expect(calcularExtra(local(DIA, '13:45'), horario)).toBe(0)
+  })
+
+  it('Salida 13:59 → 0 min (justo antes del umbral)', () => {
+    expect(calcularExtra(local(DIA, '13:59'), horario)).toBe(0)
+  })
+
+  it('Salida 14:00 → 30 min (alcanzó el umbral: 14:00 − 13:30)', () => {
+    expect(calcularExtra(local(DIA, '14:00'), horario)).toBe(30)
+  })
+
+  it('Salida 14:15 → 45 min (14:15 − 13:30)', () => {
+    expect(calcularExtra(local(DIA, '14:15'), horario)).toBe(45)
   })
 })
 
