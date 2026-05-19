@@ -12,8 +12,17 @@ export default async function AsistenciaPage({
   const supabase = createClient()
   const fecha = searchParams.fecha ?? fechaHoyLocal()
 
-  // Nota: se usa !empleado_id para disambiguar porque registros_asistencia
-  // tiene dos FK a empleados (empleado_id y editado_por).
+  // Queries independientes en paralelo
+  const [{ data: sucursales }, { data: empleados }, { data: horarios }] = await Promise.all([
+    supabase.from('sucursales').select('id, nombre').order('nombre'),
+    supabase.from('empleados')
+      .select('id, nombre, apellido, sucursal_id')
+      .eq('activo', true)
+      .order('apellido'),
+    supabase.from('horarios_sucursal').select('*'),
+  ])
+
+  // Filtro de sucursal: reutiliza los empleados ya traídos (evita una query extra)
   let query = supabase
     .from('registros_asistencia')
     .select('*, empleados!empleado_id(id, nombre, apellido, sucursal_id, sucursales(nombre))')
@@ -24,34 +33,17 @@ export default async function AsistenciaPage({
     query = query.eq('empleado_id', searchParams.empleado_id)
   }
 
-  // Filtro por sucursal: buscar primero los IDs de empleados de esa sucursal
   if (searchParams.sucursal_id) {
-    const { data: empIds } = await supabase
-      .from('empleados')
-      .select('id')
-      .eq('sucursal_id', searchParams.sucursal_id)
-      .eq('activo', true)
-
-    const ids = empIds?.map(e => e.id) ?? []
+    const ids = (empleados ?? [])
+      .filter(e => e.sucursal_id === searchParams.sucursal_id)
+      .map(e => e.id)
     query = ids.length > 0
       ? query.in('empleado_id', ids)
-      : query.eq('empleado_id', '00000000-0000-0000-0000-000000000000') // sin resultados
+      : query.eq('empleado_id', '00000000-0000-0000-0000-000000000000')
   }
 
   const { data: registros, error: registrosError } = await query
   if (registrosError) console.error('[AsistenciaPage]', registrosError.message)
-
-  const { data: sucursales } = await supabase
-    .from('sucursales').select('id, nombre').order('nombre')
-
-  const { data: empleados } = await supabase
-    .from('empleados')
-    .select('id, nombre, apellido, sucursal_id')
-    .eq('activo', true)
-    .order('apellido')
-
-  const { data: horarios } = await supabase
-    .from('horarios_sucursal').select('*')
 
   return (
     <div>

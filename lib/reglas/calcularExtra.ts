@@ -26,13 +26,12 @@ export function calcularExtra(
     return fromZonedTime(t, TZ)
   }
 
-  const umbralUTC    = buildTime(horario.umbral_extra)
-  const horaSalidaUTC = buildTime(horario.hora_salida)
+  const umbralUTC = buildTime(horario.umbral_extra)
 
-  if (horaSalida.getTime() < umbralUTC.getTime()) {
+  if (horaSalida.getTime() <= umbralUTC.getTime()) {
     return 0
   }
 
-  const diffMs = horaSalida.getTime() - horaSalidaUTC.getTime()
+  const diffMs = horaSalida.getTime() - umbralUTC.getTime()
   return Math.floor(diffMs / 60_000)
 }

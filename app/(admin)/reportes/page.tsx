@@ -16,39 +16,36 @@ export default async function ReportesPage({
 
   const [ano, mes] = mesActual.split('-').map(Number)
   const desde = `${mesActual}-01`
-  const hasta = new Date(ano, mes, 0).toISOString().split('T')[0]  // último día del mes
+  const hasta = new Date(ano, mes, 0).toISOString().split('T')[0]
 
   let empleadosQuery = supabase
     .from('empleados')
     .select('*, sucursales(id, nombre)')
     .eq('activo', true)
     .order('apellido')
-
   if (searchParams.sucursal_id) {
     empleadosQuery = empleadosQuery.eq('sucursal_id', searchParams.sucursal_id)
   }
 
-  const { data: empleados } = await empleadosQuery
-
-  const { data: registros } = await supabase
-    .from('registros_asistencia')
-    .select('*')
-    .gte('fecha', desde)
-    .lte('fecha', hasta)
-
-  const { data: config } = await supabase
-    .from('config_liquidacion')
-    .select('*')
-    .lte('vigente_desde', hasta)
-    .order('vigente_desde', { ascending: false })
-    .limit(1)
-    .single()
-
-  const { data: sucursales } = await supabase
-    .from('sucursales').select('id, nombre').order('nombre')
-
-  const { data: horarios } = await supabase
-    .from('horarios_sucursal').select('*')
+  // Las 5 queries son independientes entre sí — se ejecutan en paralelo
+  const [
+    { data: empleados },
+    { data: registros },
+    { data: config },
+    { data: sucursales },
+    { data: horarios },
+  ] = await Promise.all([
+    empleadosQuery,
+    supabase.from('registros_asistencia').select('*').gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('config_liquidacion')
+      .select('*')
+      .lte('vigente_desde', hasta)
+      .order('vigente_desde', { ascending: false })
+      .limit(1)
+      .single(),
+    supabase.from('sucursales').select('id, nombre').order('nombre'),
+    supabase.from('horarios_sucursal').select('*'),
+  ])
 
   return (
     <div>

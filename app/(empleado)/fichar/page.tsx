@@ -9,22 +9,19 @@ export default async function FicharPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: empleado } = await supabase
-    .from('empleados')
-    .select('*, sucursales(id, nombre)')
-    .eq('id', user.id)
-    .single()
-
-  if (!empleado) redirect('/login')
-
   const fechaHoy = fechaHoyLocal()
 
-  const { data: registros } = await supabase
-    .from('registros_asistencia')
-    .select('*')
-    .eq('empleado_id', user.id)
-    .eq('fecha', fechaHoy)
-    .order('hora_entrada', { ascending: true })
+  // empleado y registros son independientes — se ejecutan en paralelo
+  const [{ data: empleado }, { data: registros }] = await Promise.all([
+    supabase.from('empleados').select('*, sucursales(id, nombre)').eq('id', user.id).single(),
+    supabase.from('registros_asistencia')
+      .select('*')
+      .eq('empleado_id', user.id)
+      .eq('fecha', fechaHoy)
+      .order('hora_entrada', { ascending: true }),
+  ])
+
+  if (!empleado) redirect('/login')
 
   return (
     <FicharClient

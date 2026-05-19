@@ -42,11 +42,15 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   const { data: empleado } = await supabase
     .from('empleados').select('sucursal_id').eq('id', empleado_id).single()
 
+  const [fy, fm, fd] = fecha.split('-').map(Number)
+  const esSabado = new Date(fy, fm - 1, fd).getDay() === 6
+
   const { data: horarios } = await supabase
     .from('horarios_sucursal')
     .select('*')
     .eq('sucursal_id', empleado?.sucursal_id)
     .eq('turno', turno)
+    .eq('es_sabado', esSabado)
 
   const horario = horarios?.[0]
 
