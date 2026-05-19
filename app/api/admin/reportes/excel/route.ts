@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularMes } from '@/lib/reglas/calcularMes'
+import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
+import type { HorarioSucursal } from '@/lib/types/database'
 import ExcelJS from 'exceljs'
 import { format } from 'date-fns-tz'
 
@@ -46,7 +48,16 @@ export async function GET(request: NextRequest) {
     .limit(1)
     .single()
 
+  const { data: horarios } = await supabase
+    .from('horarios_sucursal').select('*')
+
   const montoPresentismo = config ? Number(config.monto_presentismo) : 0
+
+  const horariosPorSucursal = new Map<string, HorarioSucursal[]>()
+  for (const h of (horarios ?? []) as HorarioSucursal[]) {
+    if (!horariosPorSucursal.has(h.sucursal_id)) horariosPorSucursal.set(h.sucursal_id, [])
+    horariosPorSucursal.get(h.sucursal_id)!.push(h)
+  }
 
   const workbook  = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(`Reporte ${mes}`)
@@ -57,9 +68,10 @@ export async function GET(request: NextRequest) {
     { header: 'Sucursal',       key: 'sucursal',    width: 20 },
     { header: 'Sueldo',         key: 'sueldo',      width: 16 },
     { header: 'Valor hs extra', key: 'valor_hora',  width: 16 },
-    { header: 'Días trabajados',key: 'dias',        width: 16 },
-    { header: 'Tardanzas',      key: 'tardanzas',   width: 12 },
-    { header: 'Horas extra',    key: 'horas_extra', width: 14 },
+    { header: 'Días trabajados',  key: 'dias',          width: 16 },
+    { header: 'Tardanzas',        key: 'tardanzas',     width: 12 },
+    { header: 'Inasistencias',    key: 'inasistencias', width: 14 },
+    { header: 'Horas extra',      key: 'horas_extra',   width: 14 },
     { header: 'Monto extra',    key: 'monto_extra', width: 14 },
     { header: 'Presentismo',    key: 'presentismo', width: 14 },
     { header: 'Total',          key: 'total',       width: 14 },
@@ -74,23 +86,27 @@ export async function GET(request: NextRequest) {
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(n)
 
   for (const emp of empleados ?? []) {
-    const regsEmp  = (registros ?? []).filter(r => r.empleado_id === emp.id)
-    const sueldo   = Number(emp.sueldo ?? 0)
-    const resumen  = calcularMes(regsEmp, sueldo, montoPresentismo)
-    const valorHora = sueldo > 0 ? sueldo / 180 : 0
+    const regsEmp     = (registros ?? []).filter(r => r.empleado_id === emp.id)
+    const sueldo      = Number(emp.sueldo ?? 0)
+    const horariosEmp   = emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : []
+    const fechaIngreso  = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
+    const inasistencias = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
+    const resumen     = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
+    const valorHora   = sueldo > 0 ? sueldo / 180 : 0
 
     worksheet.addRow({
-      apellido:    emp.apellido,
-      nombre:      emp.nombre,
-      sucursal:    (emp.sucursales as { nombre: string } | null)?.nombre ?? '',
-      sueldo:      sueldo > 0 ? fmt(sueldo) : 'Sin asignar',
-      valor_hora:  valorHora > 0 ? fmt(valorHora) : '—',
-      dias:        resumen.diasTrabajados,
-      tardanzas:   resumen.tardanzas,
-      horas_extra: resumen.horasExtraFormato,
-      monto_extra: fmt(resumen.montoExtra),
-      presentismo: fmt(resumen.presentismo),
-      total:       fmt(resumen.totalLiquidar),
+      apellido:      emp.apellido,
+      nombre:        emp.nombre,
+      sucursal:      (emp.sucursales as { nombre: string } | null)?.nombre ?? '',
+      sueldo:        sueldo > 0 ? fmt(sueldo) : 'Sin asignar',
+      valor_hora:    valorHora > 0 ? fmt(valorHora) : '—',
+      dias:          resumen.diasTrabajados,
+      tardanzas:     resumen.tardanzas,
+      inasistencias: resumen.inasistencias,
+      horas_extra:   resumen.horasExtraFormato,
+      monto_extra:   fmt(resumen.montoExtra),
+      presentismo:   fmt(resumen.presentismo),
+      total:         fmt(resumen.totalLiquidar),
     })
   }
 

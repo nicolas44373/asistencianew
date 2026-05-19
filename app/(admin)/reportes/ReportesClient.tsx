@@ -2,8 +2,10 @@
 
 import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal } from '@/lib/types/database'
+import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal, HorarioSucursal } from '@/lib/types/database'
 import { calcularMes } from '@/lib/reglas/calcularMes'
+import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
+import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
 
@@ -12,28 +14,39 @@ interface Props {
   registros: RegistroAsistencia[]
   config: ConfigLiquidacion | null
   sucursales: Sucursal[]
+  horarios: HorarioSucursal[]
   mesActual: string
   sucursalFiltro: string
 }
 
 export function ReportesClient({
-  empleados, registros, config, sucursales, mesActual, sucursalFiltro,
+  empleados, registros, config, sucursales, horarios, mesActual, sucursalFiltro,
 }: Props) {
   const router = useRouter()
   const [mes, setMes]           = useState(mesActual)
   const [sucursal, setSucursal] = useState(sucursalFiltro)
   const [exportando, setExportando] = useState(false)
+  const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
 
   const montoPresentismo = config ? Number(config.monto_presentismo) : 0
 
   const resúmenes = useMemo(() => {
+    const horariosPorSucursal = new Map<string, HorarioSucursal[]>()
+    for (const h of horarios) {
+      if (!horariosPorSucursal.has(h.sucursal_id)) horariosPorSucursal.set(h.sucursal_id, [])
+      horariosPorSucursal.get(h.sucursal_id)!.push(h)
+    }
+
     return empleados.map(emp => {
-      const regsEmp = registros.filter(r => r.empleado_id === emp.id)
-      const sueldo  = emp.sueldo ?? 0
-      const resumen = calcularMes(regsEmp, sueldo, montoPresentismo)
+      const regsEmp     = registros.filter(r => r.empleado_id === emp.id)
+      const sueldo      = emp.sueldo ?? 0
+      const horariosEmp = emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : []
+      const fechaIngreso = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+      const inasistencias = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
+      const resumen = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
       return { empleado: emp, resumen }
     })
-  }, [empleados, registros, montoPresentismo])
+  }, [empleados, registros, montoPresentismo, horarios, mes])
 
   function buscar() {
     const params = new URLSearchParams({ mes })
@@ -121,6 +134,7 @@ export function ReportesClient({
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">$/h extra</th>
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">Días</th>
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">Tardanzas</th>
+                <th className="text-right px-6 py-3 text-gray-500 font-medium">Inasistencias</th>
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">Hs Extra</th>
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">Monto Extra</th>
                 <th className="text-right px-6 py-3 text-gray-500 font-medium">Presentismo</th>
@@ -130,7 +144,7 @@ export function ReportesClient({
             <tbody className="divide-y divide-gray-100">
               {resúmenes.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-6 py-10 text-center text-gray-400">
+                  <td colSpan={11} className="px-6 py-10 text-center text-gray-400">
                     Sin datos para este período
                   </td>
                 </tr>
@@ -140,7 +154,10 @@ export function ReportesClient({
                 const valorHora = sueldo > 0 ? sueldo / 180 : null
                 return (
                 <tr key={empleado.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 font-medium text-gray-800">
+                  <td
+                    className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
+                    onClick={() => setSelectedEmpleadoId(empleado.id)}
+                  >
                     {empleado.apellido}, {empleado.nombre}
                   </td>
                   <td className="px-6 py-4 text-gray-600">
@@ -156,6 +173,11 @@ export function ReportesClient({
                   <td className="px-6 py-4 text-right">
                     <span className={resumen.tardanzas >= 3 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
                       {resumen.tardanzas}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <span className={resumen.inasistencias >= 1 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
+                      {resumen.inasistencias}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right text-gray-700">{resumen.horasExtraFormato}</td>
@@ -174,6 +196,13 @@ export function ReportesClient({
           </table>
         </div>
       </div>
+
+      {selectedEmpleadoId && (
+        <EmpleadoModal
+          empleadoId={selectedEmpleadoId}
+          onClose={() => setSelectedEmpleadoId(null)}
+        />
+      )}
     </div>
   )
 }

@@ -16,6 +16,7 @@ function registro(overrides: Partial<RegistroAsistencia>): RegistroAsistencia {
     hora_entrada: '2024-01-15T11:15:00Z',
     hora_salida:  '2024-01-15T16:30:00Z',
     tarde: false,
+    egreso_anticipado: false,
     minutos_extra: 0,
     editado_por: null,
     motivo_edicion: null,
@@ -115,5 +116,35 @@ describe('calcularMes — días trabajados', () => {
       registro({ hora_entrada: null, fecha: '2024-01-16' }),
     ], SUELDO, MONTO_PRESENTISMO)
     expect(r.diasTrabajados).toBe(1)
+  })
+})
+
+describe('calcularMes — inasistencias', () => {
+  it('0 inasistencias → presentismo completo', () => {
+    const r = calcularMes([registro({})], SUELDO, MONTO_PRESENTISMO, 0)
+    expect(r.inasistencias).toBe(0)
+    expect(r.presentismo).toBe(MONTO_PRESENTISMO)
+  })
+
+  it('1 inasistencia → presentismo = 0', () => {
+    const r = calcularMes([registro({})], SUELDO, MONTO_PRESENTISMO, 1)
+    expect(r.inasistencias).toBe(1)
+    expect(r.presentismo).toBe(0)
+  })
+
+  it('1 inasistencia y 0 tardanzas → pierde presentismo de todas formas', () => {
+    const r = calcularMes([registro({ tarde: false })], SUELDO, MONTO_PRESENTISMO, 1)
+    expect(r.presentismo).toBe(0)
+    expect(r.totalLiquidar).toBe(r.montoExtra)
+  })
+
+  it('0 inasistencias pero 3 tardanzas → pierde presentismo', () => {
+    const registros = [
+      registro({ tarde: true }),
+      registro({ tarde: true, fecha: '2024-01-16' }),
+      registro({ tarde: true, fecha: '2024-01-17' }),
+    ]
+    const r = calcularMes(registros, SUELDO, MONTO_PRESENTISMO, 0)
+    expect(r.presentismo).toBe(0)
   })
 })

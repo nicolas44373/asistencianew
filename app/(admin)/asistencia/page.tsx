@@ -46,9 +46,12 @@ export default async function AsistenciaPage({
 
   const { data: empleados } = await supabase
     .from('empleados')
-    .select('id, nombre, apellido')
+    .select('id, nombre, apellido, sucursal_id')
     .eq('activo', true)
     .order('apellido')
+
+  const { data: horarios } = await supabase
+    .from('horarios_sucursal').select('*')
 
   return (
     <div>
@@ -57,6 +60,7 @@ export default async function AsistenciaPage({
         registros={registros ?? []}
         sucursales={sucursales ?? []}
         empleados={empleados ?? []}
+        horarios={horarios ?? []}
         fechaInicial={fecha}
         filtros={searchParams}
       />

@@ -79,6 +79,7 @@ export type RegistroConEmpleado = Omit<RegistroAsistencia, 'empleados'> & {
 export interface ResumenMensual {
   diasTrabajados: number
   tardanzas: number
+  inasistencias: number
   minutosExtraTotal: number
   horasExtraFormato: string
   montoExtra: number

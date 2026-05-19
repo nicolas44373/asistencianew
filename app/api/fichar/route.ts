@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
 import { calcularExtra } from '@/lib/reglas/calcularExtra'
+import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
 import { distanciaMetros } from '@/lib/utils/geo'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
@@ -142,8 +143,10 @@ export async function POST(request: NextRequest) {
       respuesta = NextResponse.json({ tipo: 'ingreso', registro: nuevo })
 
     } else if (registroExistente.hora_entrada && !registroExistente.hora_salida) {
-      const minutosExtra     = calcularExtra(ahora, turnoActivo)
-      const egresoAnticipado = calcularEgresoAnticipado(ahora, turnoActivo)
+      const minutosExtraEntrada = calcularExtraEntrada(new Date(registroExistente.hora_entrada), turnoActivo)
+      const minutosExtraSalida  = calcularExtra(ahora, turnoActivo)
+      const minutosExtra        = minutosExtraEntrada + minutosExtraSalida
+      const egresoAnticipado    = calcularEgresoAnticipado(ahora, turnoActivo)
       const { data: actualizado, error: updError } = await supabase
         .from('registros_asistencia')
         .update({ hora_salida: ahora.toISOString(), minutos_extra: minutosExtra, egreso_anticipado: egresoAnticipado })

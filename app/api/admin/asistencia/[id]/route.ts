@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
 import { calcularExtra } from '@/lib/reglas/calcularExtra'
+import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
 import { fromZonedTime } from 'date-fns-tz'
 
@@ -49,10 +50,12 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
   const horario = horarios?.[0]
 
-  // Recalcular tarde, egreso_anticipado y minutos_extra
-  const tarde             = horario && entradaDate ? calcularTarde(entradaDate, horario)             : false
-  const minutosExtra      = horario && salidaDate  ? calcularExtra(salidaDate, horario)              : 0
-  const egresoAnticipado  = horario && salidaDate  ? calcularEgresoAnticipado(salidaDate, horario)   : false
+  // Recalcular tarde, egreso_anticipado y minutos_extra (entrada temprana + salida tardía)
+  const tarde               = horario && entradaDate ? calcularTarde(entradaDate, horario)                   : false
+  const minutosExtraEntrada = horario && entradaDate ? calcularExtraEntrada(entradaDate, horario)             : 0
+  const minutosExtraSalida  = horario && salidaDate  ? calcularExtra(salidaDate, horario)                    : 0
+  const minutosExtra        = minutosExtraEntrada + minutosExtraSalida
+  const egresoAnticipado    = horario && salidaDate  ? calcularEgresoAnticipado(salidaDate, horario)         : false
 
   const { error } = await supabase
     .from('registros_asistencia')

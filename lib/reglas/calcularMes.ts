@@ -8,12 +8,13 @@ const HORAS_MES = 180
  *
  * valor_hora = sueldo / 180
  * monto_extra = (minutos_extra / 60) × valor_hora
- * presentismo = monto_presentismo si tardanzas < 3, sino 0
+ * presentismo = monto_presentismo si tardanzas < 3 E inasistencias = 0, sino 0
  */
 export function calcularMes(
   registros: RegistroAsistencia[],
   sueldo: number,
-  montoPresentismo: number
+  montoPresentismo: number,
+  inasistencias = 0
 ): ResumenMensual {
   let diasTrabajados = 0
   let tardanzas = 0
@@ -31,12 +32,14 @@ export function calcularMes(
   const horasExtra = minutosExtraTotal / 60
   const montoExtra = parseFloat((horasExtra * valorHora).toFixed(2))
 
-  const presentismo   = tardanzas < 3 ? montoPresentismo : 0
-  const totalLiquidar = parseFloat((montoExtra + presentismo).toFixed(2))
+  const pierdePresntismo = tardanzas >= 3 || inasistencias >= 1
+  const presentismo      = pierdePresntismo ? 0 : montoPresentismo
+  const totalLiquidar    = parseFloat((montoExtra + presentismo).toFixed(2))
 
   return {
     diasTrabajados,
     tardanzas,
+    inasistencias,
     minutosExtraTotal,
     horasExtraFormato: formatMinutos(minutosExtraTotal),
     montoExtra,

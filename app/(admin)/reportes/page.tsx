@@ -47,6 +47,9 @@ export default async function ReportesPage({
   const { data: sucursales } = await supabase
     .from('sucursales').select('id, nombre').order('nombre')
 
+  const { data: horarios } = await supabase
+    .from('horarios_sucursal').select('*')
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Reportes Mensuales</h1>
@@ -55,6 +58,7 @@ export default async function ReportesPage({
         registros={registros ?? []}
         config={config}
         sucursales={sucursales ?? []}
+        horarios={horarios ?? []}
         mesActual={mesActual}
         sucursalFiltro={searchParams.sucursal_id ?? ''}
       />

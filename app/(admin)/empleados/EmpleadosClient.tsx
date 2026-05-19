@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Empleado, Sucursal } from '@/lib/types/database'
+import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
 
@@ -42,6 +43,7 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [success, setSuccess]   = useState<string | null>(null)
+  const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
 
   function abrirCrear() {
     setForm(defaultForm)
@@ -137,7 +139,10 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
             <tbody className="divide-y divide-gray-100">
               {empleados.map(emp => (
                 <tr key={emp.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 font-medium text-gray-800">
+                  <td
+                    className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
+                    onClick={() => setSelectedEmpleadoId(emp.id)}
+                  >
                     {emp.apellido}, {emp.nombre}
                   </td>
                   <td className="px-6 py-4 font-mono text-gray-600">
@@ -184,6 +189,13 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
           </table>
         </div>
       </div>
+
+      {selectedEmpleadoId && (
+        <EmpleadoModal
+          empleadoId={selectedEmpleadoId}
+          onClose={() => setSelectedEmpleadoId(null)}
+        />
+      )}
 
       {/* Modal */}
       {mode && (

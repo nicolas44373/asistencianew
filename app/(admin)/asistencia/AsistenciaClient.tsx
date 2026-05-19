@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import type { RegistroAsistencia, Sucursal } from '@/lib/types/database'
+import type { RegistroAsistencia, Sucursal, HorarioSucursal } from '@/lib/types/database'
 import { formatHora, formatMinutos } from '@/lib/utils/tiempo'
+import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 
 interface EmpleadoAnidado {
   id: string; nombre: string; apellido: string
@@ -16,7 +17,8 @@ type RegistroConEmp = RegistroAsistencia & { empleados: EmpleadoAnidado | null }
 interface Props {
   registros: RegistroConEmp[]
   sucursales: Sucursal[]
-  empleados: Array<{ id: string; nombre: string; apellido: string }>
+  empleados: Array<{ id: string; nombre: string; apellido: string; sucursal_id: string | null }>
+  horarios: HorarioSucursal[]
   fechaInicial: string
   filtros: { sucursal_id?: string; empleado_id?: string }
 }
@@ -27,7 +29,7 @@ interface EditForm {
   motivo_edicion: string
 }
 
-export function AsistenciaClient({ registros, sucursales, empleados, fechaInicial, filtros }: Props) {
+export function AsistenciaClient({ registros, sucursales, empleados, horarios, fechaInicial, filtros }: Props) {
   const router = useRouter()
   const [fecha, setFecha]         = useState(fechaInicial)
   const [sucursalId, setSucursal] = useState(filtros.sucursal_id ?? '')
@@ -36,6 +38,31 @@ export function AsistenciaClient({ registros, sucursales, empleados, fechaInicia
   const [editForm, setEditForm]   = useState<EditForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '' })
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState<string | null>(null)
+  const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
+
+  // Empleados que debían trabajar ese día pero no tienen ningún registro
+  const ausentes = useMemo(() => {
+    const [y, m, d]  = fechaInicial.split('-').map(Number)
+    const diaSemana  = new Date(y, m - 1, d).getDay() // 0=Dom … 6=Sab
+    const conRegistro = new Set(registros.map(r => r.empleado_id))
+
+    return empleados.filter(emp => {
+      if (filtros.empleado_id && emp.id !== filtros.empleado_id) return false
+      if (filtros.sucursal_id && emp.sucursal_id !== filtros.sucursal_id) return false
+      if (conRegistro.has(emp.id)) return false
+
+      const horariosEmp = horarios.filter(h => h.sucursal_id === emp.sucursal_id)
+      if (horariosEmp.length === 0) return false
+
+      const tieneHorarioSemana = horariosEmp.some(h => !h.es_sabado)
+      const tieneHorarioSabado = horariosEmp.some(h => h.es_sabado)
+
+      return (
+        (diaSemana >= 1 && diaSemana <= 5 && tieneHorarioSemana) ||
+        (diaSemana === 6 && tieneHorarioSabado)
+      )
+    })
+  }, [fechaInicial, registros, empleados, horarios, filtros])
 
   function aplicarFiltros() {
     const params = new URLSearchParams({ fecha })
@@ -163,7 +190,10 @@ export function AsistenciaClient({ registros, sucursales, empleados, fechaInicia
                 const emp = r.empleados
                 return (
                   <tr key={r.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 font-medium text-gray-800">
+                    <td
+                      className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
+                      onClick={() => emp && setSelectedEmpleadoId(emp.id)}
+                    >
                       {emp?.apellido}, {emp?.nombre}
                     </td>
                     <td className="px-6 py-4 text-gray-600">{emp?.sucursales?.nombre ?? '—'}</td>
@@ -199,10 +229,43 @@ export function AsistenciaClient({ registros, sucursales, empleados, fechaInicia
                   </tr>
                 )
               })}
+
+              {/* Filas de ausentes */}
+              {ausentes.map(emp => {
+                const sucursalNombre = sucursales.find(s => s.id === emp.sucursal_id)?.nombre ?? '—'
+                return (
+                  <tr key={`ausente-${emp.id}`} className="bg-gray-50/60">
+                    <td
+                      className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
+                      onClick={() => setSelectedEmpleadoId(emp.id)}
+                    >
+                      {emp.apellido}, {emp.nombre}
+                    </td>
+                    <td className="px-6 py-4 text-gray-500">{sucursalNombre}</td>
+                    <td className="px-6 py-4 text-gray-400">—</td>
+                    <td className="px-6 py-4 text-gray-400">—</td>
+                    <td className="px-6 py-4 text-gray-400">—</td>
+                    <td className="px-6 py-4">
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
+                        Ausente
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-gray-400">—</td>
+                    <td className="px-6 py-4 text-gray-400">—</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       </div>
+
+      {selectedEmpleadoId && (
+        <EmpleadoModal
+          empleadoId={selectedEmpleadoId}
+          onClose={() => setSelectedEmpleadoId(null)}
+        />
+      )}
 
       {/* Modal edición */}
       {editando && (
