@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
-import type { HorarioSucursal } from '@/lib/types/database'
+import type { HorarioSucursal, HorarioEmpleado, RegistroAsistencia } from '@/lib/types/database'
 import ExcelJS from 'exceljs'
 import { format } from 'date-fns-tz'
 
@@ -33,30 +33,39 @@ export async function GET(request: NextRequest) {
     .order('apellido')
   if (sucursalId) empQuery = empQuery.eq('sucursal_id', sucursalId)
 
-  const { data: empleados } = await empQuery
-  const { data: registros  } = await supabase
-    .from('registros_asistencia')
-    .select('*')
-    .gte('fecha', desde)
-    .lte('fecha', hasta)
-
-  const { data: config } = await supabase
-    .from('config_liquidacion')
-    .select('monto_presentismo')
-    .lte('vigente_desde', hasta)
-    .order('vigente_desde', { ascending: false })
-    .limit(1)
-    .single()
-
-  const { data: horarios } = await supabase
-    .from('horarios_sucursal').select('*')
+  // Todas las queries en paralelo
+  const [
+    { data: empleados },
+    { data: registros },
+    { data: config },
+    { data: horariosSuc },
+    { data: horariosEmp },
+  ] = await Promise.all([
+    empQuery,
+    supabase.from('registros_asistencia')
+      .select('empleado_id, fecha, hora_entrada, tarde, minutos_extra')
+      .gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('config_liquidacion')
+      .select('monto_presentismo')
+      .lte('vigente_desde', hasta)
+      .order('vigente_desde', { ascending: false })
+      .limit(1).single(),
+    supabase.from('horarios_sucursal').select('*'),
+    supabase.from('horarios_empleado').select('*'),
+  ])
 
   const montoPresentismo = config ? Number(config.monto_presentismo) : 0
 
   const horariosPorSucursal = new Map<string, HorarioSucursal[]>()
-  for (const h of (horarios ?? []) as HorarioSucursal[]) {
+  for (const h of (horariosSuc ?? []) as HorarioSucursal[]) {
     if (!horariosPorSucursal.has(h.sucursal_id)) horariosPorSucursal.set(h.sucursal_id, [])
     horariosPorSucursal.get(h.sucursal_id)!.push(h)
+  }
+
+  const horariosPersonalesPorEmpleado = new Map<string, HorarioEmpleado[]>()
+  for (const h of (horariosEmp ?? []) as HorarioEmpleado[]) {
+    if (!horariosPersonalesPorEmpleado.has(h.empleado_id)) horariosPersonalesPorEmpleado.set(h.empleado_id, [])
+    horariosPersonalesPorEmpleado.get(h.empleado_id)!.push(h)
   }
 
   const workbook  = new ExcelJS.Workbook()
@@ -86,11 +95,14 @@ export async function GET(request: NextRequest) {
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(n)
 
   for (const emp of empleados ?? []) {
-    const regsEmp     = (registros ?? []).filter(r => r.empleado_id === emp.id)
-    const sueldo      = Number(emp.sueldo ?? 0)
-    const horariosEmp   = emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : []
+    const regsEmp       = ((registros ?? []) as RegistroAsistencia[]).filter(r => r.empleado_id === emp.id)
+    const sueldo        = Number(emp.sueldo ?? 0)
+    const personales    = horariosPersonalesPorEmpleado.get(emp.id) ?? []
+    const horariosEfect = personales.length > 0
+      ? personales
+      : (emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : [])
     const fechaIngreso  = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
-    const inasistencias = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
+    const inasistencias = calcularInasistencias(regsEmp, horariosEfect, mes, fechaIngreso)
     const resumen     = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
     const valorHora   = sueldo > 0 ? sueldo / 180 : 0
 

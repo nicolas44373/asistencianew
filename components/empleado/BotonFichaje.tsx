@@ -99,15 +99,13 @@ export function BotonFichaje({ registros, onFichaje }: Props) {
 
       if (tipo === 'ingreso') {
         setFeedback(`Ingreso registrado a las ${formatHora(registro.hora_entrada!)}`)
+        onFichaje([...registros, registro])
       } else if (tipo === 'salida') {
         setFeedback(`Salida registrada a las ${formatHora(registro.hora_salida!)}`)
+        onFichaje(registros.map(r => r.id === registro.id ? registro : r))
       } else {
         setFeedback('Jornada ya completada')
       }
-
-      const getRes  = await fetch('/api/fichar')
-      const getData = await getRes.json()
-      onFichaje(getData.registros ?? [])
     } catch {
       setError('Error de conexión. Verificá tu señal.')
     } finally {

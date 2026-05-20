@@ -6,7 +6,7 @@ import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
 import { distanciaMetros } from '@/lib/utils/geo'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
-import type { HorarioSucursal } from '@/lib/types/database'
+import type { HorarioSucursal, RegistroAsistencia, Turno } from '@/lib/types/database'
 
 export async function POST(request: NextRequest) {
   try {
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     // 3. Obtener datos del empleado (sucursal + device registrado)
     const { data: empleado, error: empError } = await supabase
       .from('empleados')
-      .select('id, sucursal_id, device_id, sucursales(id, nombre, latitud, longitud, radio_metros)')
+      .select('id, rol, sucursal_id, device_id, sucursales(id, nombre, latitud, longitud, radio_metros)')
       .eq('id', user.id)
       .eq('activo', true)
       .single()
@@ -104,7 +104,24 @@ export async function POST(request: NextRequest) {
     const ahora    = new Date()
     const fechaHoy = fechaHoyLocal()
 
-    // 7. Determinar turno activo (horario personal tiene prioridad sobre el de la sucursal)
+    // 7. Empleados administracion en días de semana usan lógica de bloques libres
+    const rolEmpleado = (empleado as { rol?: string }).rol
+    const esDiaSemana = (() => {
+      const local = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
+      return local.getDay() >= 1 && local.getDay() <= 5
+    })()
+
+    if (rolEmpleado === 'administracion' && esDiaSemana) {
+      const respuesta = await manejarFichajeLibre(supabase, user.id, fechaHoy, ahora)
+
+      if (!empleado.device_id) {
+        await supabase.from('empleados').update({ device_id: deviceId }).eq('id', user.id)
+      }
+
+      return respuesta
+    }
+
+    // 8. Determinar turno activo (horario personal tiene prioridad sobre el de la sucursal)
     const [{ data: horariosPersonales }, { data: horariosSucursal }] = await Promise.all([
       supabase.from('horarios_empleado').select('*').eq('empleado_id', user.id),
       supabase.from('horarios_sucursal').select('*').eq('sucursal_id', empleado.sucursal_id),
@@ -123,7 +140,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No hay turno activo en este momento' }, { status: 400 })
     }
 
-    // 8. Verificar registro existente del día
+    // 9. Verificar registro existente del día
     const { data: registroExistente } = await supabase
       .from('registros_asistencia')
       .select('*')
@@ -132,7 +149,7 @@ export async function POST(request: NextRequest) {
       .eq('turno', turnoActivo.turno)
       .single()
 
-    // 9. Registrar ingreso o salida
+    // 10. Registrar ingreso o salida
     let respuesta: NextResponse
 
     if (!registroExistente || !registroExistente.hora_entrada) {
@@ -203,6 +220,81 @@ export async function GET() {
     console.error('[api/fichar GET]', err)
     return NextResponse.json({ error: 'Error interno' }, { status: 500 })
   }
+}
+
+// ── Fichaje libre (administracion, lunes-viernes) ────────────
+
+async function manejarFichajeLibre(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  userId: string,
+  fechaHoy: string,
+  ahora: Date
+): Promise<NextResponse> {
+  const { data: bloquesHoy } = await supabase
+    .from('registros_asistencia')
+    .select('*')
+    .eq('empleado_id', userId)
+    .eq('fecha', fechaHoy)
+    .order('hora_entrada', { ascending: true })
+
+  const bloques: RegistroAsistencia[] = bloquesHoy ?? []
+  const bloqueAbierto = bloques.find(b => b.hora_entrada && !b.hora_salida)
+  const bloquesCerrados = bloques.filter(b => b.hora_entrada && b.hora_salida)
+
+  if (bloqueAbierto) {
+    // Cerrar el bloque abierto y calcular extra del día
+    let totalMs = ahora.getTime() - new Date(bloqueAbierto.hora_entrada!).getTime()
+    for (const b of bloquesCerrados) {
+      totalMs += new Date(b.hora_salida!).getTime() - new Date(b.hora_entrada!).getTime()
+    }
+    const totalMin  = Math.floor(totalMs / 60_000)
+    const extra     = Math.max(0, totalMin - 480)
+
+    // Poner minutos_extra = 0 en los bloques anteriores, el total va en el que cierra
+    if (bloquesCerrados.length > 0) {
+      await Promise.all(
+        bloquesCerrados.map(b =>
+          supabase.from('registros_asistencia').update({ minutos_extra: 0 }).eq('id', b.id)
+        )
+      )
+    }
+
+    const { data: actualizado, error } = await supabase
+      .from('registros_asistencia')
+      .update({ hora_salida: ahora.toISOString(), minutos_extra: extra, egreso_anticipado: false })
+      .eq('id', bloqueAbierto.id)
+      .select()
+      .single()
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ tipo: 'salida', registro: actualizado })
+  }
+
+  if (bloquesCerrados.length < 2) {
+    // Abrir nuevo bloque (mañana para el primero, tarde para el segundo)
+    const turno: Turno = bloquesCerrados.length === 0 ? 'mañana' : 'tarde'
+
+    const { data: nuevo, error } = await supabase
+      .from('registros_asistencia')
+      .insert({
+        empleado_id:       userId,
+        fecha:             fechaHoy,
+        turno,
+        hora_entrada:      ahora.toISOString(),
+        tarde:             false,
+        egreso_anticipado: false,
+        minutos_extra:     0,
+      })
+      .select()
+      .single()
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ tipo: 'ingreso', registro: nuevo })
+  }
+
+  // Los 2 bloques ya están cerrados
+  return NextResponse.json({ tipo: 'completo', registro: bloques[bloques.length - 1] })
 }
 
 // ── Helpers ───────────────────────────────────────────────────

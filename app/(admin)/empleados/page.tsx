@@ -6,15 +6,10 @@ export const dynamic = 'force-dynamic'
 export default async function EmpleadosPage() {
   const supabase = createClient()
 
-  const { data: empleados } = await supabase
-    .from('empleados')
-    .select('*, sucursales(id, nombre)')
-    .order('apellido')
-
-  const { data: sucursales } = await supabase
-    .from('sucursales')
-    .select('id, nombre')
-    .order('nombre')
+  const [{ data: empleados }, { data: sucursales }] = await Promise.all([
+    supabase.from('empleados').select('*, sucursales(id, nombre)').order('apellido'),
+    supabase.from('sucursales').select('id, nombre').order('nombre'),
+  ])
 
   return (
     <div>

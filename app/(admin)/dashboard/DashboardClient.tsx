@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { formatHora } from '@/lib/utils/tiempo'
@@ -31,18 +31,24 @@ interface Props {
 }
 
 export function DashboardClient({ empleados, registros, horarios, hoy }: Props) {
-  const router   = useRouter()
-  const supabase = createClient()
+  const router       = useRouter()
+  const supabase     = createClient()
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
 
   useEffect(() => {
     const channel = supabase
       .channel('dashboard-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'registros_asistencia' }, () => {
-        router.refresh()
+        // Debounce: si llegan varios fichajes en 3s se hace un solo refresh
+        if (refreshTimer.current) clearTimeout(refreshTimer.current)
+        refreshTimer.current = setTimeout(() => router.refresh(), 3000)
       })
       .subscribe()
-    return () => { supabase.removeChannel(channel) }
+    return () => {
+      supabase.removeChannel(channel)
+      if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    }
   }, [router, supabase])
 
   const regPorEmpleado = useMemo(() => {

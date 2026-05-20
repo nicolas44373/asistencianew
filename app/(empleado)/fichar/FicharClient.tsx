@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { RelojTiempoReal } from '@/components/empleado/RelojTiempoReal'
@@ -10,7 +10,7 @@ import type { RegistroAsistencia } from '@/lib/types/database'
 
 interface SucursalMin { nombre: string }
 interface EmpleadoMin {
-  id: string; nombre: string; apellido: string
+  id: string; nombre: string; apellido: string; rol: string
   sucursales: SucursalMin | null
 }
 
@@ -23,6 +23,13 @@ export function FicharClient({ empleado, registrosIniciales }: Props) {
   const router = useRouter()
   const supabase = createClient()
   const [registros, setRegistros] = useState<RegistroAsistencia[]>(registrosIniciales)
+  // Flag para evitar un refetch del realtime cuando el cambio lo generó el propio fichaje
+  const skipNextRealtime = useRef(false)
+
+  function handleFichaje(newRegistros: RegistroAsistencia[]) {
+    skipNextRealtime.current = true
+    setRegistros(newRegistros)
+  }
 
   // Suscripción Realtime: actualiza si el admin modifica un registro
   useEffect(() => {
@@ -37,6 +44,10 @@ export function FicharClient({ empleado, registrosIniciales }: Props) {
           filter: `empleado_id=eq.${empleado.id}`,
         },
         async () => {
+          if (skipNextRealtime.current) {
+            skipNextRealtime.current = false
+            return
+          }
           const res = await fetch('/api/fichar')
           const data = await res.json()
           setRegistros(data.registros ?? [])
@@ -79,7 +90,7 @@ export function FicharClient({ empleado, registrosIniciales }: Props) {
 
       {/* Botón de fichaje */}
       <div className="flex flex-col items-center px-5 pb-8">
-        <BotonFichaje registros={registros} onFichaje={setRegistros} />
+        <BotonFichaje registros={registros} onFichaje={handleFichaje} />
       </div>
 
       {/* Historial del día */}
@@ -87,7 +98,7 @@ export function FicharClient({ empleado, registrosIniciales }: Props) {
         <h2 className="text-blue-200 text-xs uppercase tracking-wider mb-3">
           Registros de hoy
         </h2>
-        <HistorialDia registros={registros} />
+        <HistorialDia registros={registros} esLibre={empleado.rol === 'administracion'} />
       </div>
 
       {/* Link al historial personal */}

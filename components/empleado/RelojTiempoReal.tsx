@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { format } from 'date-fns-tz'
 import { es } from 'date-fns/locale'
 
 const TZ = 'America/Argentina/Buenos_Aires'
 
-export function RelojTiempoReal() {
+export const RelojTiempoReal = memo(function RelojTiempoReal() {
   const [hora, setHora] = useState('')
   const [fecha, setFecha] = useState('')
 
@@ -27,4 +27,4 @@ export function RelojTiempoReal() {
       <div className="text-blue-200 mt-1 capitalize text-sm">{fecha}</div>
     </div>
   )
-}
+})

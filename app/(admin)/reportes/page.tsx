@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { ReportesClient } from './ReportesClient'
+import type { RegistroAsistencia } from '@/lib/types/database'
 import { format } from 'date-fns-tz'
 
 const TZ = 'America/Argentina/Buenos_Aires'
@@ -37,9 +38,11 @@ export default async function ReportesPage({
     { data: horariosPersonales },
   ] = await Promise.all([
     empleadosQuery,
-    supabase.from('registros_asistencia').select('*').gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('registros_asistencia')
+      .select('empleado_id, fecha, hora_entrada, tarde, minutos_extra')
+      .gte('fecha', desde).lte('fecha', hasta),
     supabase.from('config_liquidacion')
-      .select('*')
+      .select('monto_presentismo, vigente_desde, id, valor_hora_extra, created_at')
       .lte('vigente_desde', hasta)
       .order('vigente_desde', { ascending: false })
       .limit(1)
@@ -54,7 +57,7 @@ export default async function ReportesPage({
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Reportes Mensuales</h1>
       <ReportesClient
         empleados={empleados ?? []}
-        registros={registros ?? []}
+        registros={(registros ?? []) as RegistroAsistencia[]}
         config={config}
         sucursales={sucursales ?? []}
         horarios={horarios ?? []}

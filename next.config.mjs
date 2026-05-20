@@ -12,30 +12,8 @@ const withPWAConfig = withPWA({
   register: true,
   skipWaiting: true,
   disable: process.env.NODE_ENV === 'development',
-  // Estrategia NetworkFirst para la API de fichaje
+  // Las rutas /api/ NO se cachean: son datos de asistencia en tiempo real
   runtimeCaching: [
-    {
-      urlPattern: /^\/api\/fichar/,
-      handler: 'NetworkFirst',
-      options: {
-        cacheName: 'api-fichar',
-        networkTimeoutSeconds: 10,
-        expiration: { maxEntries: 50, maxAgeSeconds: 24 * 60 * 60 },
-        backgroundSync: {
-          name: 'fichar-offline',
-          options: { maxRetentionTime: 24 * 60 },
-        },
-      },
-    },
-    {
-      urlPattern: /^\/api\//,
-      handler: 'NetworkFirst',
-      options: {
-        cacheName: 'api-cache',
-        networkTimeoutSeconds: 10,
-        expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 },
-      },
-    },
     {
       urlPattern: /\/_next\/static\//,
       handler: 'CacheFirst',
