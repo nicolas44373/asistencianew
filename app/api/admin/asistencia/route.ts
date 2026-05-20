@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
-import { calcularExtra } from '@/lib/reglas/calcularExtra'
-import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
 import { fromZonedTime } from 'date-fns-tz'
 import type { HorarioSucursal, Turno } from '@/lib/types/database'
@@ -53,6 +51,11 @@ export async function POST(request: NextRequest) {
   let egresoAnticipado    = false
   let minutosExtra        = 0
 
+  // Para registros creados manualmente por el admin, no se calculan horas extras
+  // automáticamente. El turno detectado puede no coincidir con el horario real del empleado
+  // (ej: entrada a las 8:30 detecta "mañana" pero el empleado trabajó todo el día).
+  // El cálculo de extras se resetea a 0 siempre en registros manuales del admin.
+
   if (esLibre) {
     // Determinar número de bloques existentes para el día
     const { data: bloquesExistentes } = await supabase
@@ -85,13 +88,17 @@ export async function POST(request: NextRequest) {
       }
     }
   } else {
-    // Obtener horarios del empleado (personal tiene prioridad sobre el de la sucursal)
+    // Fusionar horarios: el personal sobreescribe al de sucursal para el mismo turno,
+    // pero los turnos sin configuración personal heredan el horario de la sucursal.
     const [{ data: personales }, { data: sucursalHorarios }] = await Promise.all([
       supabase.from('horarios_empleado').select('*').eq('empleado_id', empleado_id).eq('es_sabado', esSabado),
       supabase.from('horarios_sucursal').select('*').eq('sucursal_id', empleado?.sucursal_id ?? '').eq('es_sabado', esSabado),
     ])
 
-    const horarios = ((personales?.length ?? 0) > 0 ? personales : (sucursalHorarios ?? [])) as HorarioSucursal[]
+    const schedMap = new Map<string, HorarioSucursal>()
+    for (const h of (sucursalHorarios ?? []) as HorarioSucursal[]) schedMap.set(h.turno, h)
+    for (const h of (personales ?? []) as HorarioSucursal[]) schedMap.set(h.turno, h)
+    const horarios = Array.from(schedMap.values())
 
     // Detectar el turno más apropiado según la hora de entrada
     const horario = detectarHorarioPorHora(entradaDate, horarios) ?? horarios[0]
@@ -99,11 +106,10 @@ export async function POST(request: NextRequest) {
     if (horario) {
       turno = horario.turno
       tarde = calcularTarde(entradaDate, horario)
-
+      // No se calculan extras: el turno auto-detectado puede no reflejar el horario real
+      // del empleado (ej: mañana detecta entrada a las 8:30 pero trabajó hasta las 20:30).
+      // minutosExtra queda en 0.
       if (salidaDate) {
-        const extraEnt = calcularExtraEntrada(entradaDate, horario)
-        const extraSal = calcularExtra(salidaDate, horario)
-        minutosExtra     = extraEnt + extraSal
         egresoAnticipado = calcularEgresoAnticipado(salidaDate, horario)
       }
     } else {

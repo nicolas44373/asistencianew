@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
-import { calcularExtra } from '@/lib/reglas/calcularExtra'
-import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
 import { fromZonedTime } from 'date-fns-tz'
 
@@ -85,12 +83,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
   const horario = personales?.[0] ?? sucursalHorarios?.[0]
 
-  // Recalcular tarde, egreso_anticipado y minutos_extra (entrada temprana + salida tardía)
-  const tarde               = horario && entradaDate ? calcularTarde(entradaDate, horario)           : false
-  const minutosExtraEntrada = horario && entradaDate ? calcularExtraEntrada(entradaDate, horario)     : 0
-  const minutosExtraSalida  = horario && salidaDate  ? calcularExtra(salidaDate, horario)            : 0
-  const minutosExtra        = minutosExtraEntrada + minutosExtraSalida
-  const egresoAnticipado    = horario && salidaDate  ? calcularEgresoAnticipado(salidaDate, horario) : false
+  // Para ediciones manuales del admin, los minutos_extra se ponen en 0.
+  // El turno del registro puede no reflejar el horario real del empleado
+  // (ej: "mañana" con salida a las 20:30 generaría 8 hs extra incorrectas).
+  const tarde            = horario && entradaDate ? calcularTarde(entradaDate, horario)           : false
+  const egresoAnticipado = horario && salidaDate  ? calcularEgresoAnticipado(salidaDate, horario) : false
 
   const { error } = await supabase
     .from('registros_asistencia')
@@ -99,7 +96,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       hora_salida:       salidaDate?.toISOString()  ?? null,
       tarde,
       egreso_anticipado: egresoAnticipado,
-      minutos_extra:     minutosExtra,
+      minutos_extra:     0,
       editado_por:       user.id,
       motivo_edicion,
     })

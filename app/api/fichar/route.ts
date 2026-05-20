@@ -121,26 +121,93 @@ export async function POST(request: NextRequest) {
       return respuesta
     }
 
-    // 8. Determinar turno activo (horario personal tiene prioridad sobre el de la sucursal)
+    // 8. Determinar turno activo
+    //    Los horarios personales del empleado se fusionan con los de la sucursal:
+    //    si existe una fila personal para turno+es_sabado, reemplaza la de la sucursal;
+    //    si no existe, se usa la de la sucursal. Esto permite configurar solo
+    //    los turnos que difieren sin perder los que el empleado comparte con la sucursal.
     const [{ data: horariosPersonales }, { data: horariosSucursal }] = await Promise.all([
       supabase.from('horarios_empleado').select('*').eq('empleado_id', user.id),
       supabase.from('horarios_sucursal').select('*').eq('sucursal_id', empleado.sucursal_id),
     ])
 
-    const horariosEfectivos = (horariosPersonales && horariosPersonales.length > 0)
-      ? horariosPersonales
-      : (horariosSucursal ?? [])
+    const schedMap = new Map<string, HorarioSucursal>()
+    for (const h of (horariosSucursal ?? []) as HorarioSucursal[]) {
+      schedMap.set(`${h.turno}-${h.es_sabado}`, h)
+    }
+    for (const h of (horariosPersonales ?? []) as HorarioSucursal[]) {
+      schedMap.set(`${h.turno}-${h.es_sabado}`, h) // personal overrides branch
+    }
+    const horariosEfectivos = Array.from(schedMap.values())
 
     if (horariosEfectivos.length === 0) {
       return NextResponse.json({ error: 'Sin horario configurado' }, { status: 400 })
     }
 
+    // 8b. Si ya existe un registro abierto hoy (entrada sin salida), cerrarlo directamente
+    //     sin importar en qué ventana de turno estemos ahora.
+    //     Esto cubre el caso donde el admin registró la entrada manualmente.
+    const { data: registroAbierto } = await supabase
+      .from('registros_asistencia')
+      .select('*')
+      .eq('empleado_id', user.id)
+      .eq('fecha', fechaHoy)
+      .not('hora_entrada', 'is', null)
+      .is('hora_salida', null)
+      .limit(1)
+      .maybeSingle()
+
+    if (registroAbierto) {
+      const localDateNow  = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
+      const esSabadoAhora = localDateNow.getDay() === 6
+
+      // Para encontrar el horario correcto al cierre:
+      // 1. Horario personal del empleado para este turno+día (fuente de verdad primaria)
+      // 2. Si no existe, horario de la sucursal para este turno+día
+      // 3. Fallback: horario activo ahora mismo (detectarTurnoActivo sobre solo sucursal)
+      const [{ data: hPersonal }, { data: hSucursal }] = await Promise.all([
+        supabase.from('horarios_empleado').select('*')
+          .eq('empleado_id', user.id)
+          .eq('turno', registroAbierto.turno)
+          .eq('es_sabado', esSabadoAhora)
+          .maybeSingle(),
+        supabase.from('horarios_sucursal').select('*')
+          .eq('sucursal_id', empleado.sucursal_id)
+          .eq('turno', registroAbierto.turno)
+          .eq('es_sabado', esSabadoAhora)
+          .maybeSingle(),
+      ])
+
+      const horarioDelTurno = (hPersonal ?? hSucursal)
+        ?? detectarTurnoActivo(ahora, (horariosSucursal ?? []) as HorarioSucursal[])
+        ?? (horariosEfectivos[0] as HorarioSucursal)
+
+      const minutosExtra     = calcularExtra(ahora, horarioDelTurno)
+      const egresoAnticipado = calcularEgresoAnticipado(ahora, horarioDelTurno)
+
+      const { data: actualizado, error: updError } = await supabase
+        .from('registros_asistencia')
+        .update({ hora_salida: ahora.toISOString(), minutos_extra: minutosExtra, egreso_anticipado: egresoAnticipado })
+        .eq('id', registroAbierto.id)
+        .select()
+        .single()
+
+      if (updError) return NextResponse.json({ error: updError.message }, { status: 500 })
+
+      if (!deviceRegistrado) {
+        await supabase.from('empleados').update({ device_id: deviceId }).eq('id', user.id)
+      }
+
+      return NextResponse.json({ tipo: 'salida', registro: actualizado })
+    }
+
+    // 9. No hay registro abierto: verificar si estamos en una ventana de turno para crear ingreso
     const turnoActivo = detectarTurnoActivo(ahora, horariosEfectivos as HorarioSucursal[])
     if (!turnoActivo) {
       return NextResponse.json({ error: 'No hay turno activo en este momento' }, { status: 400 })
     }
 
-    // 9. Verificar registro existente del día
+    // Verificar si ya existe un registro completo para este turno
     const { data: registroExistente } = await supabase
       .from('registros_asistencia')
       .select('*')
@@ -162,21 +229,6 @@ export async function POST(request: NextRequest) {
 
       if (insError) return NextResponse.json({ error: insError.message }, { status: 500 })
       respuesta = NextResponse.json({ tipo: 'ingreso', registro: nuevo })
-
-    } else if (registroExistente.hora_entrada && !registroExistente.hora_salida) {
-      const minutosExtraEntrada = calcularExtraEntrada(new Date(registroExistente.hora_entrada), turnoActivo)
-      const minutosExtraSalida  = calcularExtra(ahora, turnoActivo)
-      const minutosExtra        = minutosExtraEntrada + minutosExtraSalida
-      const egresoAnticipado    = calcularEgresoAnticipado(ahora, turnoActivo)
-      const { data: actualizado, error: updError } = await supabase
-        .from('registros_asistencia')
-        .update({ hora_salida: ahora.toISOString(), minutos_extra: minutosExtra, egreso_anticipado: egresoAnticipado })
-        .eq('id', registroExistente.id)
-        .select()
-        .single()
-
-      if (updError) return NextResponse.json({ error: updError.message }, { status: 500 })
-      respuesta = NextResponse.json({ tipo: 'salida', registro: actualizado })
 
     } else {
       respuesta = NextResponse.json({ tipo: 'completo', registro: registroExistente })
