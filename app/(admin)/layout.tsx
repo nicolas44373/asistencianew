@@ -18,11 +18,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
   const { data: empleado } = await supabase
     .from('empleados')
-    .select('nombre, apellido, rol')
+    .select('nombre, apellido')
     .eq('id', user.id)
     .single()
-
-  if (empleado?.rol !== 'admin') redirect('/fichar')
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">

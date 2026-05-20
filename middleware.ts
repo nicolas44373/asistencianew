@@ -32,14 +32,8 @@ export async function middleware(request: NextRequest) {
   // Rutas públicas: solo login
   if (pathname === '/login' || pathname === '/') {
     if (user) {
-      // Ya autenticado: redirigir según rol
-      const { data: empleado } = await supabase
-        .from('empleados')
-        .select('rol')
-        .eq('id', user.id)
-        .single()
-
-      const destino = empleado?.rol === 'admin' ? '/dashboard' : '/fichar'
+      const rol = await getRol(supabase, user)
+      const destino = rol === 'admin' ? '/dashboard' : '/fichar'
       return NextResponse.redirect(new URL(destino, request.url))
     }
     return supabaseResponse
@@ -57,18 +51,26 @@ export async function middleware(request: NextRequest) {
       pathname.startsWith('/reportes') ||
       pathname.startsWith('/config')) {
 
-    const { data: empleado } = await supabase
-      .from('empleados')
-      .select('rol')
-      .eq('id', user.id)
-      .single()
-
-    if (empleado?.rol !== 'admin') {
+    const rol = await getRol(supabase, user)
+    if (rol !== 'admin') {
       return NextResponse.redirect(new URL('/fichar', request.url))
     }
   }
 
   return supabaseResponse
+}
+
+async function getRol(
+  supabase: ReturnType<typeof createServerClient>,
+  user: { id: string; app_metadata?: Record<string, unknown> }
+): Promise<string | null> {
+  // Fast path: role stored in JWT app_metadata (set when employee is created/updated)
+  const rolMeta = user.app_metadata?.rol
+  if (typeof rolMeta === 'string') return rolMeta
+
+  // Fallback: DB query for existing users without app_metadata
+  const { data } = await supabase.from('empleados').select('rol').eq('id', user.id).single()
+  return data?.rol ?? null
 }
 
 export const config = {

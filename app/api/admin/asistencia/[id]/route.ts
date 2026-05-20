@@ -45,14 +45,19 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   const [fy, fm, fd] = fecha.split('-').map(Number)
   const esSabado = new Date(fy, fm - 1, fd).getDay() === 6
 
-  const { data: horarios } = await supabase
-    .from('horarios_sucursal')
-    .select('*')
-    .eq('sucursal_id', empleado?.sucursal_id)
-    .eq('turno', turno)
-    .eq('es_sabado', esSabado)
+  // Horario personal tiene prioridad sobre el de la sucursal
+  const [{ data: personales }, { data: sucursalHorarios }] = await Promise.all([
+    supabase.from('horarios_empleado').select('*')
+      .eq('empleado_id', empleado_id)
+      .eq('turno', turno)
+      .eq('es_sabado', esSabado),
+    supabase.from('horarios_sucursal').select('*')
+      .eq('sucursal_id', empleado?.sucursal_id)
+      .eq('turno', turno)
+      .eq('es_sabado', esSabado),
+  ])
 
-  const horario = horarios?.[0]
+  const horario = personales?.[0] ?? sucursalHorarios?.[0]
 
   // Recalcular tarde, egreso_anticipado y minutos_extra (entrada temprana + salida tardía)
   const tarde               = horario && entradaDate ? calcularTarde(entradaDate, horario)                   : false

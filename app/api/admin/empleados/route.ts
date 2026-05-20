@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     let passwordAuth: string
     let dniGuardar: string | null = null
 
-    if (rolFinal === 'empleado') {
+    if (rolFinal === 'empleado' || rolFinal === 'administracion') {
       if (!dni?.trim()) return NextResponse.json({ error: 'El DNI es obligatorio' }, { status: 400 })
       const dniTrim  = dni.trim()
       emailAuth      = `${dniTrim}@empleado.local`
@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
       email:         emailAuth,
       password:      passwordAuth,
       email_confirm: true,
+      app_metadata:  { rol: rolFinal },
     })
 
     if (authErr || !newUser.user) {

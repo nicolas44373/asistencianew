@@ -34,6 +34,7 @@ export default async function ReportesPage({
     { data: config },
     { data: sucursales },
     { data: horarios },
+    { data: horariosPersonales },
   ] = await Promise.all([
     empleadosQuery,
     supabase.from('registros_asistencia').select('*').gte('fecha', desde).lte('fecha', hasta),
@@ -45,6 +46,7 @@ export default async function ReportesPage({
       .single(),
     supabase.from('sucursales').select('id, nombre').order('nombre'),
     supabase.from('horarios_sucursal').select('*'),
+    supabase.from('horarios_empleado').select('*'),
   ])
 
   return (
@@ -56,6 +58,7 @@ export default async function ReportesPage({
         config={config}
         sucursales={sucursales ?? []}
         horarios={horarios ?? []}
+        horariosPersonales={horariosPersonales ?? []}
         mesActual={mesActual}
         sucursalFiltro={searchParams.sucursal_id ?? ''}
       />

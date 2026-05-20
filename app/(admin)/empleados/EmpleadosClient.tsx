@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Empleado, Sucursal } from '@/lib/types/database'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
+import { HorarioPersonalModal } from '@/components/admin/HorarioPersonalModal'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
 
@@ -21,7 +22,7 @@ interface FormData {
   email: string
   password: string
   sucursal_id: string
-  rol: 'empleado' | 'admin'
+  rol: 'empleado' | 'admin' | 'administracion'
   activo: boolean
   sueldo: string
   resetPassword: boolean
@@ -43,7 +44,8 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [success, setSuccess]   = useState<string | null>(null)
-  const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
+  const [selectedEmpleadoId, setSelectedEmpleadoId]         = useState<string | null>(null)
+  const [horarioEmpleado, setHorarioEmpleado] = useState<EmpleadoRow | null>(null)
 
   function abrirCrear() {
     setForm(defaultForm)
@@ -155,8 +157,12 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                       emp.rol === 'admin'
                         ? 'bg-purple-100 text-purple-700'
+                        : emp.rol === 'administracion'
+                        ? 'bg-orange-100 text-orange-700'
                         : 'bg-blue-100 text-blue-700'
-                    }`}>{emp.rol}</span>
+                    }`}>
+                      {emp.rol === 'administracion' ? 'Administración' : emp.rol}
+                    </span>
                   </td>
                   <td className="px-6 py-4 text-right font-mono text-gray-700">
                     {emp.sueldo != null
@@ -176,12 +182,20 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     )}
                   </td>
                   <td className="px-6 py-4">
-                    <button
-                      onClick={() => abrirEditar(emp)}
-                      className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                    >
-                      Editar
-                    </button>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => abrirEditar(emp)}
+                        className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => setHorarioEmpleado(emp)}
+                        className="text-purple-600 hover:text-purple-800 text-sm font-medium"
+                      >
+                        Horario
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -194,6 +208,14 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
         <EmpleadoModal
           empleadoId={selectedEmpleadoId}
           onClose={() => setSelectedEmpleadoId(null)}
+        />
+      )}
+
+      {horarioEmpleado && (
+        <HorarioPersonalModal
+          empleadoId={horarioEmpleado.id}
+          empleadoNombre={`${horarioEmpleado.nombre} ${horarioEmpleado.apellido}`}
+          onClose={() => setHorarioEmpleado(null)}
         />
       )}
 
@@ -217,16 +239,17 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                 <label className="block text-xs font-medium text-gray-700 mb-1">Rol</label>
                 <select
                   value={form.rol}
-                  onChange={e => f('rol', e.target.value as 'empleado' | 'admin')}
+                  onChange={e => f('rol', e.target.value as 'empleado' | 'admin' | 'administracion')}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="empleado">Empleado</option>
-                  <option value="admin">Admin</option>
+                  <option value="administracion">Administración</option>
+                  <option value="admin">Admin (panel)</option>
                 </select>
               </div>
 
               {/* Credenciales según rol */}
-              {form.rol === 'empleado' ? (
+              {(form.rol === 'empleado' || form.rol === 'administracion') ? (
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">DNI</label>
                   <input
@@ -238,7 +261,7 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     placeholder="Ej: 40123456"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <p className="text-xs text-gray-400 mt-0.5">El empleado ingresa solo con su DNI</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Ingresa con su DNI desde la app de fichaje</p>
                 </div>
               ) : (
                 <>
@@ -318,7 +341,7 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                     </>
                   )}
 
-                  {form.rol === 'empleado' && (
+                  {(form.rol === 'empleado' || form.rol === 'administracion') && (
                     <label className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"

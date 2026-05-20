@@ -31,23 +31,20 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       sueldo: sueldo !== '' && sueldo != null ? Number(sueldo) : null,
     }
 
-    if (rol === 'empleado' && dni?.trim()) {
-      // Empleados: DNI es la credencial → actualizar email sintético y contraseña
+    if ((rol === 'empleado' || rol === 'administracion') && dni?.trim()) {
       const dniTrim = dni.trim()
       updateData.dni = dniTrim
       const { error: authErr } = await adminClient.auth.admin.updateUserById(params.id, {
-        email:    `${dniTrim}@empleado.local`,
-        password: dniTrim,
+        email:        `${dniTrim}@empleado.local`,
+        password:     dniTrim,
+        app_metadata: { rol },
       })
       if (authErr) return NextResponse.json({ error: authErr.message }, { status: 500 })
-    }
-
-    if (rol === 'admin' && resetPassword && nuevaPassword) {
-      // Admins: actualizar contraseña manualmente
-      const { error: pwdErr } = await adminClient.auth.admin.updateUserById(params.id, {
-        password: nuevaPassword,
-      })
-      if (pwdErr) return NextResponse.json({ error: pwdErr.message }, { status: 500 })
+    } else if (rol === 'admin') {
+      const authUpdate: Record<string, unknown> = { app_metadata: { rol } }
+      if (resetPassword && nuevaPassword) authUpdate.password = nuevaPassword
+      const { error: authErr } = await adminClient.auth.admin.updateUserById(params.id, authUpdate)
+      if (authErr) return NextResponse.json({ error: authErr.message }, { status: 500 })
     }
 
     if (resetDevice) {

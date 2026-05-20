@@ -1,6 +1,6 @@
 // ── Tipos derivados del esquema de Supabase ──────────────────
 
-export type Rol = 'empleado' | 'admin'
+export type Rol = 'empleado' | 'admin' | 'administracion'
 export type Turno = 'mañana' | 'tarde' | 'unico'
 
 export interface Sucursal {
@@ -22,6 +22,21 @@ export interface HorarioSucursal {
   tolerancia_min: number
   es_sabado: boolean
 }
+
+export interface HorarioEmpleado {
+  id: string
+  empleado_id: string
+  turno: Turno
+  hora_entrada: string
+  hora_salida: string
+  umbral_extra: string
+  tolerancia_min: number
+  es_sabado: boolean
+  created_at: string
+}
+
+/** Campos compartidos por HorarioSucursal y HorarioEmpleado */
+export type HorarioBase = Pick<HorarioSucursal, 'turno' | 'hora_entrada' | 'hora_salida' | 'umbral_extra' | 'tolerancia_min' | 'es_sabado'>
 
 export interface Empleado {
   id: string

@@ -104,17 +104,21 @@ export async function POST(request: NextRequest) {
     const ahora    = new Date()
     const fechaHoy = fechaHoyLocal()
 
-    // 7. Determinar turno activo
-    const { data: horarios } = await supabase
-      .from('horarios_sucursal')
-      .select('*')
-      .eq('sucursal_id', empleado.sucursal_id)
+    // 7. Determinar turno activo (horario personal tiene prioridad sobre el de la sucursal)
+    const [{ data: horariosPersonales }, { data: horariosSucursal }] = await Promise.all([
+      supabase.from('horarios_empleado').select('*').eq('empleado_id', user.id),
+      supabase.from('horarios_sucursal').select('*').eq('sucursal_id', empleado.sucursal_id),
+    ])
 
-    if (!horarios || horarios.length === 0) {
+    const horariosEfectivos = (horariosPersonales && horariosPersonales.length > 0)
+      ? horariosPersonales
+      : (horariosSucursal ?? [])
+
+    if (horariosEfectivos.length === 0) {
       return NextResponse.json({ error: 'Sin horario configurado' }, { status: 400 })
     }
 
-    const turnoActivo = detectarTurnoActivo(ahora, horarios as HorarioSucursal[])
+    const turnoActivo = detectarTurnoActivo(ahora, horariosEfectivos as HorarioSucursal[])
     if (!turnoActivo) {
       return NextResponse.json({ error: 'No hay turno activo en este momento' }, { status: 400 })
     }

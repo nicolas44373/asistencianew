@@ -1,4 +1,4 @@
-import type { HorarioSucursal, RegistroAsistencia } from '@/lib/types/database'
+import type { RegistroAsistencia } from '@/lib/types/database'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
 
 /**
@@ -8,7 +8,7 @@ import { fechaHoyLocal } from '@/lib/utils/tiempo'
  */
 export function calcularInasistencias(
   registros: RegistroAsistencia[],
-  horarios: HorarioSucursal[],
+  horarios: { es_sabado: boolean }[],
   mes: string,        // "YYYY-MM"
   fechaIngreso?: string // "YYYY-MM-DD" — fecha de alta del empleado
 ): number {

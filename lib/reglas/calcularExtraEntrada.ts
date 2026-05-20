@@ -29,14 +29,13 @@ export function calcularExtraEntrada(
     return fromZonedTime(t, TZ)
   }
 
-  const entradaProgramadaUTC = buildTime(horario.hora_entrada)
+  // Solo genera extra si llegó MÁS de tolerancia_min antes de hora_entrada.
+  // Ej. mañana: hora_entrada=08:15, tolerancia=15 → umbral=08:00; llega 08:00 → 30min ✓
+  //     tarde:  hora_entrada=16:45, tolerancia=14 → umbral=16:31; llega 16:40 → 0min  ✓
+  const umbralTempranoUTC = buildTime(horario.hora_entrada, -horario.tolerancia_min)
+  if (horaEntrada.getTime() > umbralTempranoUTC.getTime()) return 0
 
-  // Si llegó a tiempo o tarde no hay extra de entrada
-  if (horaEntrada.getTime() >= entradaProgramadaUTC.getTime()) return 0
-
-  // Umbral real = hora_entrada + tolerancia_min (hora de apertura del local)
   const umbralAperturaUTC = buildTime(horario.hora_entrada, horario.tolerancia_min)
-
   const diffMs = umbralAperturaUTC.getTime() - horaEntrada.getTime()
   return Math.floor(diffMs / 60_000)
 }

@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal, HorarioSucursal } from '@/lib/types/database'
+import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal, HorarioSucursal, HorarioEmpleado } from '@/lib/types/database'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
@@ -15,12 +15,13 @@ interface Props {
   config: ConfigLiquidacion | null
   sucursales: Sucursal[]
   horarios: HorarioSucursal[]
+  horariosPersonales: HorarioEmpleado[]
   mesActual: string
   sucursalFiltro: string
 }
 
 export function ReportesClient({
-  empleados, registros, config, sucursales, horarios, mesActual, sucursalFiltro,
+  empleados, registros, config, sucursales, horarios, horariosPersonales, mesActual, sucursalFiltro,
 }: Props) {
   const router = useRouter()
   const [mes, setMes]           = useState(mesActual)
@@ -37,16 +38,25 @@ export function ReportesClient({
       horariosPorSucursal.get(h.sucursal_id)!.push(h)
     }
 
+    const horariosPersonalesPorEmpleado = new Map<string, HorarioEmpleado[]>()
+    for (const h of horariosPersonales) {
+      if (!horariosPersonalesPorEmpleado.has(h.empleado_id)) horariosPersonalesPorEmpleado.set(h.empleado_id, [])
+      horariosPersonalesPorEmpleado.get(h.empleado_id)!.push(h)
+    }
+
     return empleados.map(emp => {
-      const regsEmp     = registros.filter(r => r.empleado_id === emp.id)
-      const sueldo      = emp.sueldo ?? 0
-      const horariosEmp = emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : []
-      const fechaIngreso = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
-      const inasistencias = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
-      const resumen = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
+      const regsEmp          = registros.filter(r => r.empleado_id === emp.id)
+      const sueldo           = emp.sueldo ?? 0
+      const personales       = horariosPersonalesPorEmpleado.get(emp.id) ?? []
+      const horariosEmp      = personales.length > 0
+        ? personales
+        : (emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : [])
+      const fechaIngreso     = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+      const inasistencias    = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
+      const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
       return { empleado: emp, resumen }
     })
-  }, [empleados, registros, montoPresentismo, horarios, mes])
+  }, [empleados, registros, montoPresentismo, horarios, horariosPersonales, mes])
 
   function buscar() {
     const params = new URLSearchParams({ mes })

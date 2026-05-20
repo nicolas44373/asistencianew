@@ -7,7 +7,7 @@ import { formatHora, formatFecha, formatMinutos, nombreMes } from '@/lib/utils/t
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
 import { format } from 'date-fns-tz'
-import type { RegistroAsistencia, HorarioSucursal, Empleado } from '@/lib/types/database'
+import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado } from '@/lib/types/database'
 
 const TZ = 'America/Argentina/Buenos_Aires'
 
@@ -17,6 +17,7 @@ interface ModalData {
   empleado: EmpleadoFull
   registros: RegistroAsistencia[]
   horarios: HorarioSucursal[]
+  horariosPersonales: HorarioEmpleado[]
   montoPresentismo: number
 }
 
@@ -44,7 +45,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
 
     if (!empleado) { setLoading(false); return }
 
-    const [{ data: registros }, { data: horarios }, { data: config }] = await Promise.all([
+    const [{ data: registros }, { data: horarios }, { data: horariosPersonales }, { data: config }] = await Promise.all([
       supabase.from('registros_asistencia').select('*')
         .eq('empleado_id', empleadoId)
         .gte('fecha', desde).lte('fecha', hasta)
@@ -52,6 +53,8 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         .order('hora_entrada', { ascending: true }),
       supabase.from('horarios_sucursal').select('*')
         .eq('sucursal_id', empleado.sucursal_id ?? ''),
+      supabase.from('horarios_empleado').select('*')
+        .eq('empleado_id', empleadoId),
       supabase.from('config_liquidacion').select('monto_presentismo')
         .lte('vigente_desde', hasta)
         .order('vigente_desde', { ascending: false })
@@ -62,6 +65,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       empleado: empleado as EmpleadoFull,
       registros: registros ?? [],
       horarios: (horarios ?? []) as HorarioSucursal[],
+      horariosPersonales: (horariosPersonales ?? []) as HorarioEmpleado[],
       montoPresentismo: config ? Number(config.monto_presentismo) : 0,
     })
     setLoading(false)
@@ -79,10 +83,14 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   const fmt = (n: number) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 
+  const horariosEfectivos = data
+    ? (data.horariosPersonales.length > 0 ? data.horariosPersonales : data.horarios)
+    : []
+
   const inasistencias = data
     ? calcularInasistencias(
         data.registros,
-        data.horarios,
+        horariosEfectivos,
         mes,
         new Date(data.empleado.created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
       )
