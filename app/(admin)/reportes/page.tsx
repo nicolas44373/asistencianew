@@ -23,12 +23,13 @@ export default async function ReportesPage({
     .from('empleados')
     .select('*, sucursales(id, nombre)')
     .eq('activo', true)
+    .neq('rol', 'admin')
     .order('apellido')
   if (searchParams.sucursal_id) {
     empleadosQuery = empleadosQuery.eq('sucursal_id', searchParams.sucursal_id)
   }
 
-  // Las 5 queries son independientes entre sí — se ejecutan en paralelo
+  // Todas las queries en paralelo
   const [
     { data: empleados },
     { data: registros },
@@ -36,6 +37,7 @@ export default async function ReportesPage({
     { data: sucursales },
     { data: horarios },
     { data: horariosPersonales },
+    { data: justificaciones },
   ] = await Promise.all([
     empleadosQuery,
     supabase.from('registros_asistencia')
@@ -50,6 +52,7 @@ export default async function ReportesPage({
     supabase.from('sucursales').select('id, nombre').order('nombre'),
     supabase.from('horarios_sucursal').select('*'),
     supabase.from('horarios_empleado').select('*'),
+    supabase.from('justificaciones').select('empleado_id, fecha, justificada').gte('fecha', desde).lte('fecha', hasta),
   ])
 
   return (
@@ -62,6 +65,7 @@ export default async function ReportesPage({
         sucursales={sucursales ?? []}
         horarios={horarios ?? []}
         horariosPersonales={horariosPersonales ?? []}
+        justificaciones={justificaciones ?? []}
         mesActual={mesActual}
         sucursalFiltro={searchParams.sucursal_id ?? ''}
       />

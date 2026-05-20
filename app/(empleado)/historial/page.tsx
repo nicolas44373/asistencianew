@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
-import { formatHora, formatFecha, formatMinutos } from '@/lib/utils/tiempo'
+import { formatHora, formatFecha } from '@/lib/utils/tiempo'
 import { subDays } from 'date-fns'
 import { format } from 'date-fns-tz'
 
@@ -40,27 +40,13 @@ export default async function HistorialPage() {
         ) : (
           registros.map(r => (
             <div key={r.id} className="bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="text-white font-semibold text-sm">
-                    {r.fecha ? formatFecha(r.fecha + 'T00:00:00') : r.fecha}
-                  </p>
-                  <p className="text-blue-300 text-xs capitalize">{r.turno ?? '—'}</p>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  {r.tarde ? (
-                    <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                      TARDANZA
-                    </span>
-                  ) : r.hora_entrada ? (
-                    <span className="bg-green-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                      A TIEMPO
-                    </span>
-                  ) : null}
-                </div>
+              <div className="mb-2">
+                <p className="text-white font-semibold text-sm">
+                  {r.fecha ? formatFecha(r.fecha + 'T00:00:00') : r.fecha}
+                </p>
+                <p className="text-blue-300 text-xs capitalize">{r.turno ?? '—'}</p>
               </div>
-
-              <div className="grid grid-cols-2 gap-2 mt-3 text-sm">
+              <div className="grid grid-cols-2 gap-2 text-sm">
                 <div>
                   <p className="text-blue-300 text-xs">Entrada</p>
                   <p className="text-white font-mono font-semibold">
@@ -74,12 +60,6 @@ export default async function HistorialPage() {
                   </p>
                 </div>
               </div>
-
-              {r.minutos_extra > 0 && (
-                <p className="text-yellow-300 text-xs mt-2 font-medium">
-                  + {formatMinutos(r.minutos_extra)} horas extras
-                </p>
-              )}
             </div>
           ))
         )}

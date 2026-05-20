@@ -4,10 +4,16 @@ import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal, HorarioSucursal, HorarioEmpleado } from '@/lib/types/database'
 import { calcularMes } from '@/lib/reglas/calcularMes'
-import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
+import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
+
+interface JustificacionRow {
+  empleado_id: string
+  fecha: string
+  justificada: boolean
+}
 
 interface Props {
   empleados: EmpleadoRow[]
@@ -16,12 +22,13 @@ interface Props {
   sucursales: Sucursal[]
   horarios: HorarioSucursal[]
   horariosPersonales: HorarioEmpleado[]
+  justificaciones: JustificacionRow[]
   mesActual: string
   sucursalFiltro: string
 }
 
 export function ReportesClient({
-  empleados, registros, config, sucursales, horarios, horariosPersonales, mesActual, sucursalFiltro,
+  empleados, registros, config, sucursales, horarios, horariosPersonales, justificaciones, mesActual, sucursalFiltro,
 }: Props) {
   const router = useRouter()
   const [mes, setMes]           = useState(mesActual)
@@ -53,10 +60,12 @@ export function ReportesClient({
         : (emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : [])
       const fechaIngreso     = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
       const inasistencias    = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
-      const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias)
+      const fechasJust       = new Set(justificaciones.filter(j => j.empleado_id === emp.id && j.justificada).map(j => j.fecha))
+      const inasistJust      = calcularInasistenciasJustificadas(regsEmp, horariosEmp, mes, fechasJust, fechaIngreso)
+      const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias, inasistJust)
       return { empleado: emp, resumen }
     })
-  }, [empleados, registros, montoPresentismo, horarios, horariosPersonales, mes])
+  }, [empleados, registros, montoPresentismo, horarios, horariosPersonales, justificaciones, mes])
 
   function buscar() {
     const params = new URLSearchParams({ mes })
@@ -186,9 +195,12 @@ export function ReportesClient({
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <span className={resumen.inasistencias >= 1 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
+                    <span className={resumen.inasistencias - resumen.inasistenciasJustificadas >= 1 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
                       {resumen.inasistencias}
                     </span>
+                    {resumen.inasistenciasJustificadas > 0 && (
+                      <span className="block text-xs text-green-600">{resumen.inasistenciasJustificadas} justif.</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-right text-gray-700">{resumen.horasExtraFormato}</td>
                   <td className="px-6 py-4 text-right text-gray-700">{fmt(resumen.montoExtra)}</td>

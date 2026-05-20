@@ -14,6 +14,7 @@ export default async function DashboardPage() {
       .from('empleados')
       .select('id, nombre, apellido, sucursal_id, sucursales(nombre)')
       .eq('activo', true)
+      .neq('rol', 'admin')
       .order('apellido'),
     supabase
       .from('registros_asistencia')

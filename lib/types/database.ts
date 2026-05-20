@@ -91,10 +91,21 @@ export type RegistroConEmpleado = Omit<RegistroAsistencia, 'empleados'> & {
   } | null
 }
 
+export interface Justificacion {
+  id: string
+  empleado_id: string
+  fecha: string          // "YYYY-MM-DD"
+  justificada: boolean
+  motivo: string | null
+  creado_por: string | null
+  created_at: string
+}
+
 export interface ResumenMensual {
   diasTrabajados: number
   tardanzas: number
   inasistencias: number
+  inasistenciasJustificadas: number
   minutosExtraTotal: number
   horasExtraFormato: string
   montoExtra: number

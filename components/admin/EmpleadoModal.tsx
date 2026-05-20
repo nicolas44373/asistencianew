@@ -5,10 +5,10 @@ import { addMonths, subMonths } from 'date-fns'
 import { createClient } from '@/lib/supabase/client'
 import { formatHora, formatFecha, formatMinutos, nombreMes } from '@/lib/utils/tiempo'
 import { calcularMes } from '@/lib/reglas/calcularMes'
-import { calcularInasistencias } from '@/lib/reglas/calcularInasistencias'
+import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
 import { agruparPorDia, calcularInasistenciasLibre } from '@/lib/reglas/calcularHorasLibres'
 import { format } from 'date-fns-tz'
-import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado } from '@/lib/types/database'
+import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado, Justificacion } from '@/lib/types/database'
 
 const TZ = 'America/Argentina/Buenos_Aires'
 
@@ -35,7 +35,8 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   const [loadingEstaticos, setLoadingEstaticos] = useState(true)
 
   // Registros: se recargan solo cuando cambia el mes
-  const [registros, setRegistros]           = useState<RegistroAsistencia[]>([])
+  const [registros, setRegistros]               = useState<RegistroAsistencia[]>([])
+  const [justificaciones, setJustificaciones]   = useState<Justificacion[]>([])
   const [loadingRegistros, setLoadingRegistros] = useState(true)
 
   const mes = format(mesDate, 'yyyy-MM', { timeZone: TZ })
@@ -73,14 +74,21 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
     const desde = `${mes}-01`
     const hasta = new Date(ano, mesNum, 0).toISOString().split('T')[0]
 
-    const { data } = await supabase
-      .from('registros_asistencia').select('*')
-      .eq('empleado_id', empleadoId)
-      .gte('fecha', desde).lte('fecha', hasta)
-      .order('fecha', { ascending: false })
-      .order('hora_entrada', { ascending: true })
+    const [{ data }, { data: justs }] = await Promise.all([
+      supabase
+        .from('registros_asistencia').select('*')
+        .eq('empleado_id', empleadoId)
+        .gte('fecha', desde).lte('fecha', hasta)
+        .order('fecha', { ascending: false })
+        .order('hora_entrada', { ascending: true }),
+      supabase
+        .from('justificaciones').select('*')
+        .eq('empleado_id', empleadoId)
+        .gte('fecha', desde).lte('fecha', hasta),
+    ])
 
     setRegistros(data ?? [])
+    setJustificaciones((justs ?? []) as Justificacion[])
     setLoadingRegistros(false)
   }, [empleadoId, mes]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -116,11 +124,17 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       : 0,
   [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso])
 
+  const inasistenciasJustificadas = useMemo(() => {
+    if (esLibre || !estaticos) return 0
+    const fechasJust = new Set(justificaciones.filter(j => j.justificada).map(j => j.fecha))
+    return calcularInasistenciasJustificadas(registros, horariosEfectivos, mes, fechasJust, fechaIngreso)
+  }, [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, justificaciones])
+
   const resumen = useMemo(() =>
     !esLibre && estaticos
-      ? calcularMes(registros, estaticos.empleado.sueldo ?? 0, estaticos.montoPresentismo, inasistencias)
+      ? calcularMes(registros, estaticos.empleado.sueldo ?? 0, estaticos.montoPresentismo, inasistencias, inasistenciasJustificadas)
       : null,
-  [esLibre, estaticos, registros, inasistencias])
+  [esLibre, estaticos, registros, inasistencias, inasistenciasJustificadas])
 
   const diasPorFecha = useMemo(() =>
     esLibre ? agruparPorDia(registros) : [],
@@ -297,7 +311,12 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                     <StatCard label="Días" value={resumen.diasTrabajados} />
                     <StatCard label="Tardanzas" value={resumen.tardanzas} danger={resumen.tardanzas >= 3} />
-                    <StatCard label="Inasistencias" value={resumen.inasistencias} danger={resumen.inasistencias >= 1} />
+                    <StatCard
+                      label="Inasistencias"
+                      value={resumen.inasistencias}
+                      sub={resumen.inasistenciasJustificadas > 0 ? `${resumen.inasistenciasJustificadas} justif.` : undefined}
+                      danger={resumen.inasistencias - resumen.inasistenciasJustificadas >= 1}
+                    />
                     <StatCard label="Hs extra" value={resumen.horasExtraFormato} />
                   </div>
 
@@ -363,11 +382,12 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   )
 }
 
-function StatCard({ label, value, danger }: { label: string; value: string | number; danger?: boolean }) {
+function StatCard({ label, value, danger, sub }: { label: string; value: string | number; danger?: boolean; sub?: string }) {
   return (
     <div className="bg-gray-50 rounded-xl p-3 text-center">
       <p className="text-xs text-gray-400 uppercase tracking-wide">{label}</p>
       <p className={`text-2xl font-bold mt-0.5 ${danger ? 'text-red-600' : 'text-gray-800'}`}>{value}</p>
+      {sub && <p className="text-xs text-green-600 mt-0.5">{sub}</p>}
     </div>
   )
 }
