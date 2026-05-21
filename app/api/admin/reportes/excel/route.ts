@@ -375,10 +375,11 @@ export async function GET(request: NextRequest) {
     const pers    = horPorEmp.get(emp.id) ?? []
     const horEf   = pers.length > 0 ? pers : (emp.sucursal_id ? horPorSuc.get(emp.sucursal_id) ?? [] : [])
     const fi      = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
-    const inas    = calcularInasistencias(regs, horEf, mes, fi)
     const fjust   = new Set((justificaciones ?? []).filter((j: { empleado_id: string; justificada: boolean }) => j.empleado_id === emp.id && j.justificada).map((j: { fecha: string }) => j.fecha))
+    const finjust = new Set((justificaciones ?? []).filter((j: { empleado_id: string; justificada: boolean }) => j.empleado_id === emp.id && !j.justificada).map((j: { fecha: string }) => j.fecha))
+    const inas    = calcularInasistencias(regs, horEf, mes, fi, finjust)
     const inasJ   = calcularInasistenciasJustificadas(regs, horEf, mes, fjust, fi)
-    const res     = calcularMes(regs, sueldo, montoPresentismo, inas, inasJ)
+    const res     = calcularMes(regs, sueldo, montoPresentismo, inas, inasJ, finjust)
     return {
       nombre: emp.nombre, apellido: emp.apellido, dni: emp.dni as string | null,
       sucursal: (emp.sucursales as { nombre: string } | null)?.nombre ?? '',

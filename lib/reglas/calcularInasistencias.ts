@@ -59,13 +59,22 @@ export function calcularInasistencias(
   registros: RegistroAsistencia[],
   horarios: { es_sabado: boolean }[],
   mes: string,
-  fechaIngreso?: string
+  fechaIngreso?: string,
+  fechasInjustificadasExplicitas: Set<string> = new Set()
 ): number {
-  let inasistencias = 0
-  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (_, tieneRegistro) => {
-    if (!tieneRegistro) inasistencias++
+  const fechasAusentes = new Set<string>()
+
+  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, tieneRegistro) => {
+    if (!tieneRegistro) fechasAusentes.add(fecha)
   })
-  return inasistencias
+
+  // Sumar fechas con marcación explícita de injustificada (incluso con asistencia parcial).
+  // El Set evita doble conteo si la fecha ya estaba como ausente total.
+  for (const fecha of fechasInjustificadasExplicitas) {
+    fechasAusentes.add(fecha)
+  }
+
+  return fechasAusentes.size
 }
 
 /**

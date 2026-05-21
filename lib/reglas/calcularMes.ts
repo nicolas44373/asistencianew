@@ -15,7 +15,8 @@ export function calcularMes(
   sueldo: number,
   montoPresentismo: number,
   inasistencias = 0,
-  inasistenciasJustificadas = 0
+  inasistenciasJustificadas = 0,
+  fechasInjustificadasExplicitas: Set<string> = new Set()
 ): ResumenMensual {
   const fechasConEntrada = new Set<string>()
   let tardanzas = 0
@@ -36,7 +37,7 @@ export function calcularMes(
   const montoExtra = parseFloat((horasExtra * valorHora).toFixed(2))
 
   const inasistenciasInjustificadas = inasistencias - inasistenciasJustificadas
-  const pierdePresntismo = tardanzas >= 3 || inasistenciasInjustificadas >= 1
+  const pierdePresntismo = tardanzas >= 3 || inasistenciasInjustificadas >= 1 || fechasInjustificadasExplicitas.size > 0
   const presentismo      = pierdePresntismo ? 0 : montoPresentismo
   const totalLiquidar    = parseFloat((montoExtra + presentismo).toFixed(2))
 

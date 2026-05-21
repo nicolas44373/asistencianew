@@ -118,11 +118,16 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
     estaticos ? new Date(estaticos.empleado.created_at).toLocaleDateString('sv-SE', { timeZone: TZ }) : undefined,
   [estaticos])
 
+  const fechasInjustificadasExplicitas = useMemo(() => {
+    if (esLibre || !estaticos) return new Set<string>()
+    return new Set(justificaciones.filter(j => !j.justificada).map(j => j.fecha))
+  }, [esLibre, estaticos, justificaciones])
+
   const inasistencias = useMemo(() =>
     !esLibre && estaticos
-      ? calcularInasistencias(registros, horariosEfectivos, mes, fechaIngreso)
+      ? calcularInasistencias(registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas)
       : 0,
-  [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso])
+  [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas])
 
   const inasistenciasJustificadas = useMemo(() => {
     if (esLibre || !estaticos) return 0
@@ -132,9 +137,9 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
 
   const resumen = useMemo(() =>
     !esLibre && estaticos
-      ? calcularMes(registros, estaticos.empleado.sueldo ?? 0, estaticos.montoPresentismo, inasistencias, inasistenciasJustificadas)
+      ? calcularMes(registros, estaticos.empleado.sueldo ?? 0, estaticos.montoPresentismo, inasistencias, inasistenciasJustificadas, fechasInjustificadasExplicitas)
       : null,
-  [esLibre, estaticos, registros, inasistencias, inasistenciasJustificadas])
+  [esLibre, estaticos, registros, inasistencias, inasistenciasJustificadas, fechasInjustificadasExplicitas])
 
   const diasPorFecha = useMemo(() =>
     esLibre ? agruparPorDia(registros) : [],

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularTarde } from '@/lib/reglas/calcularTarde'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
+import { calcularExtra } from '@/lib/reglas/calcularExtra'
 import { fromZonedTime } from 'date-fns-tz'
 
 const TZ = 'America/Argentina/Buenos_Aires'
@@ -83,11 +84,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
   const horario = personales?.[0] ?? sucursalHorarios?.[0]
 
-  // Para ediciones manuales del admin, los minutos_extra se ponen en 0.
-  // El turno del registro puede no reflejar el horario real del empleado
-  // (ej: "mañana" con salida a las 20:30 generaría 8 hs extra incorrectas).
   const tarde            = horario && entradaDate ? calcularTarde(entradaDate, horario)           : false
   const egresoAnticipado = horario && salidaDate  ? calcularEgresoAnticipado(salidaDate, horario) : false
+  const minutosExtra     = horario && salidaDate  ? calcularExtra(salidaDate, horario)            : 0
 
   const { error } = await supabase
     .from('registros_asistencia')
@@ -96,7 +95,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       hora_salida:       salidaDate?.toISOString()  ?? null,
       tarde,
       egreso_anticipado: egresoAnticipado,
-      minutos_extra:     0,
+      minutos_extra:     minutosExtra,
       editado_por:       user.id,
       motivo_edicion,
     })

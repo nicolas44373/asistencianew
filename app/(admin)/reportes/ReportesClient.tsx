@@ -59,10 +59,11 @@ export function ReportesClient({
         ? personales
         : (emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : [])
       const fechaIngreso     = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
-      const inasistencias    = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso)
       const fechasJust       = new Set(justificaciones.filter(j => j.empleado_id === emp.id && j.justificada).map(j => j.fecha))
+      const fechasInjust     = new Set(justificaciones.filter(j => j.empleado_id === emp.id && !j.justificada).map(j => j.fecha))
+      const inasistencias    = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso, fechasInjust)
       const inasistJust      = calcularInasistenciasJustificadas(regsEmp, horariosEmp, mes, fechasJust, fechaIngreso)
-      const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias, inasistJust)
+      const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias, inasistJust, fechasInjust)
       return { empleado: emp, resumen }
     })
   }, [empleados, registros, montoPresentismo, horarios, horariosPersonales, justificaciones, mes])

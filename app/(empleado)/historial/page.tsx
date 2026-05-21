@@ -42,7 +42,7 @@ export default async function HistorialPage() {
             <div key={r.id} className="bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
               <div className="mb-2">
                 <p className="text-white font-semibold text-sm">
-                  {r.fecha ? formatFecha(r.fecha + 'T00:00:00') : r.fecha}
+                  {r.fecha ? formatFecha(r.fecha + 'T12:00:00') : r.fecha}
                 </p>
                 <p className="text-blue-300 text-xs capitalize">{r.turno ?? '—'}</p>
               </div>
