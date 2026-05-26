@@ -50,6 +50,7 @@ export interface Empleado {
   device_id: string | null
   created_at: string
   sucursales?: Sucursal
+  permitir_otra_sucursal?: boolean
 }
 
 export interface RegistroAsistencia {

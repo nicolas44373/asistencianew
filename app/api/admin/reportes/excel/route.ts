@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
 import { calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
+import { parseJustificacionMotivo } from '@/lib/utils/justificaciones'
 import type { HorarioSucursal, HorarioEmpleado, RegistroAsistencia } from '@/lib/types/database'
 import ExcelJS from 'exceljs'
 import { format } from 'date-fns-tz'
@@ -379,9 +380,23 @@ export async function GET(request: NextRequest) {
     const horEf = esJuanBJusto ? rawHorEf.filter(h => h.turno !== 'unico') : rawHorEf
     const fi      = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
     const justifiedRows = (justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && j.justificada)
-    const fferiadoMJ = new Set(justifiedRows.filter((j: any) => j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada')).map((j: any) => j.fecha))
-    const fjust   = new Set(justifiedRows.filter((j: any) => !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada')).map((j: any) => j.fecha))
-    const finjust = new Set((justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && !j.justificada).map((j: any) => j.fecha))
+    const fferiadoMJ = new Set<string>()
+    const fjust = new Set<string>()
+    justifiedRows.forEach((j: any) => {
+      const parsed = parseJustificacionMotivo(j.motivo)
+      const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+      if (parsed.tipo === 'feriado' || parsed.tipo === 'media_jornada') {
+        fferiadoMJ.add(key)
+      } else {
+        fjust.add(key)
+      }
+    })
+    const finjust = new Set<string>();
+    (justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && !j.justificada).forEach((j: any) => {
+      const parsed = parseJustificacionMotivo(j.motivo)
+      const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+      finjust.add(key)
+    })
     const isLibre = emp.rol === 'administracion'
     const inas    = isLibre ? calcularInasistenciasLibre(regs, mes, fi, finjust, fferiadoMJ) : calcularInasistencias(regs, horEf, mes, fi, finjust, fferiadoMJ)
     const inasJ   = isLibre ? calcularInasistenciasJustificadasLibre(regs, mes, fjust, fi, fferiadoMJ) : calcularInasistenciasJustificadas(regs, horEf, mes, fjust, fi, fferiadoMJ)

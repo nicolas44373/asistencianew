@@ -22,13 +22,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const body = await request.json()
-    const { nombre, apellido, dni, sucursal_id, rol, activo, sueldo, resetDevice, resetPassword, nuevaPassword } = body
+    const { nombre, apellido, dni, sucursal_id, rol, activo, sueldo, resetDevice, resetPassword, nuevaPassword, permitir_otra_sucursal } = body
 
     const adminClient = createAdminClient()
 
     const updateData: Record<string, unknown> = {
       nombre, apellido, sucursal_id, rol, activo,
       sueldo: sueldo !== '' && sueldo != null ? Number(sueldo) : null,
+      permitir_otra_sucursal: !!permitir_otra_sucursal,
     }
 
     if ((rol === 'empleado' || rol === 'administracion') && dni?.trim()) {

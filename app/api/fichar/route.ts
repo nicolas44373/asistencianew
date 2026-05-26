@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     // 3. Obtener datos del empleado (sucursal + device registrado)
     const { data: empleado, error: empError } = await supabase
       .from('empleados')
-      .select('id, rol, sucursal_id, device_id, sucursales(id, nombre, latitud, longitud, radio_metros)')
+      .select('id, rol, sucursal_id, device_id, permitir_otra_sucursal, sucursales(id, nombre, latitud, longitud, radio_metros)')
       .eq('id', user.id)
       .eq('activo', true)
       .single()
@@ -81,22 +81,62 @@ export async function POST(request: NextRequest) {
     }
 
     // 5. Validar geofencing
-    const sucursal = empleado.sucursales as unknown as {
-      id: string; nombre: string
-      latitud: number | null; longitud: number | null; radio_metros: number
-    } | null
+    const permitirOtra = (empleado as { permitir_otra_sucursal?: boolean }).permitir_otra_sucursal ?? false
 
-    if (sucursal?.latitud != null && sucursal?.longitud != null) {
-      const distancia = Math.round(distanciaMetros(lat, lng, sucursal.latitud, sucursal.longitud))
-      if (distancia > sucursal.radio_metros) {
+    if (permitirOtra) {
+      const { data: todasSucursales, error: sucErr } = await supabase
+        .from('sucursales')
+        .select('id, nombre, latitud, longitud, radio_metros')
+
+      if (sucErr || !todasSucursales || todasSucursales.length === 0) {
+        return NextResponse.json({ error: 'No se encontraron sucursales en el sistema' }, { status: 500 })
+      }
+
+      let cercaDeAlguna = false
+      const distanciasList: Array<{ nombre: string; distancia: number; radio: number }> = []
+
+      for (const s of todasSucursales) {
+        if (s.latitud != null && s.longitud != null) {
+          const dist = Math.round(distanciaMetros(lat, lng, s.latitud, s.longitud))
+          const radio = s.radio_metros ?? 50
+          distanciasList.push({ nombre: s.nombre, distancia: dist, radio })
+          if (dist <= radio) {
+            cercaDeAlguna = true
+            break
+          }
+        }
+      }
+
+      if (!cercaDeAlguna) {
+        const detailError = distanciasList
+          .map(d => `${d.nombre}: estás a ${d.distancia} m (máx. ${d.radio} m)`)
+          .join(', ')
         return NextResponse.json(
           {
-            error: `Estás a ${distancia} m del establecimiento. Necesitás estar a menos de ${sucursal.radio_metros} m para fichar.`,
-            distancia,
-            radio: sucursal.radio_metros,
+            error: `No estás cerca de ninguna sucursal. Distancias: ${detailError}`,
+            distancias: distanciasList,
           },
           { status: 403 }
         )
+      }
+    } else {
+      const sucursal = empleado.sucursales as unknown as {
+        id: string; nombre: string
+        latitud: number | null; longitud: number | null; radio_metros: number
+      } | null
+
+      if (sucursal?.latitud != null && sucursal?.longitud != null) {
+        const distancia = Math.round(distanciaMetros(lat, lng, sucursal.latitud, sucursal.longitud))
+        if (distancia > sucursal.radio_metros) {
+          return NextResponse.json(
+            {
+              error: `Estás a ${distancia} m del establecimiento. Necesitás estar a menos de ${sucursal.radio_metros} m para fichar.`,
+              distancia,
+              radio: sucursal.radio_metros,
+            },
+            { status: 403 }
+          )
+        }
       }
     }
 

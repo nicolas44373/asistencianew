@@ -75,32 +75,40 @@ export function calcularInasistencias(
   iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, turnosEsperados, registrosDelDia) => {
     fechasProcesadas.add(fecha)
 
-    // Si es feriado o media jornada, no suma inasistencia
+    // Si es feriado o media jornada para el día completo, no suma inasistencia
     if (fechasFeriadoOMediaJornada.has(fecha)) {
       return
     }
 
-    // Si la fecha está explícitamente marcada como injustificada por el admin, cuenta como inasistencia total (1.0)
+    // Si la fecha está explícitamente marcada como injustificada para todo el día por el admin
     if (fechasInjustificadasExplicitas.has(fecha)) {
       totalInasistencias += 1.0
       return
     }
 
     const turnosRegistrados = new Set(registrosDelDia.map(r => r.turno as string))
-    let numMissed = 0
+    let dayInasistencias = 0
+
     for (const t of turnosEsperados) {
       if (!turnosRegistrados.has(t)) {
-        numMissed++
+        // Si este turno específico es feriado o media jornada, no suma inasistencia
+        if (fechasFeriadoOMediaJornada.has(`${fecha}_${t}`)) {
+          continue
+        }
+        // Si este turno específico está injustificado
+        if (fechasInjustificadasExplicitas.has(`${fecha}_${t}`)) {
+          dayInasistencias += 1.0 / turnosEsperados.length
+          continue
+        }
+        dayInasistencias += 1.0 / turnosEsperados.length
       }
     }
-
-    if (numMissed > 0) {
-      totalInasistencias += numMissed / turnosEsperados.length
-    }
+    totalInasistencias += dayInasistencias
   })
 
   // Añadir marcaciones explícitas para fechas que no hayan entrado en la iteración laboral
-  fechasInjustificadasExplicitas.forEach(fecha => {
+  fechasInjustificadasExplicitas.forEach(key => {
+    const fecha = key.split('_')[0]
     if (!fechasProcesadas.has(fecha)) {
       totalInasistencias += 1.0
     }
@@ -124,24 +132,28 @@ export function calcularInasistenciasJustificadas(
   let totalJustificadas = 0
 
   iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, turnosEsperados, registrosDelDia) => {
-    // Si es feriado o media jornada, no cuenta como inasistencia justificada
+    // Si es feriado o media jornada para el día completo, no cuenta como inasistencia
     if (fechasFeriadoOMediaJornada.has(fecha)) {
       return
     }
 
-    if (fechasJustificadas.has(fecha)) {
-      const turnosRegistrados = new Set(registrosDelDia.map(r => r.turno as string))
-      let numMissed = 0
-      for (const t of turnosEsperados) {
-        if (!turnosRegistrados.has(t)) {
-          numMissed++
+    const turnosRegistrados = new Set(registrosDelDia.map(r => r.turno as string))
+    let dayJustificadas = 0
+
+    for (const t of turnosEsperados) {
+      if (!turnosRegistrados.has(t)) {
+        // Si este turno específico es feriado o media jornada, se salta
+        if (fechasFeriadoOMediaJornada.has(`${fecha}_${t}`)) {
+          continue
+        }
+
+        // Si el día completo o este turno específico está justificado
+        if (fechasJustificadas.has(fecha) || fechasJustificadas.has(`${fecha}_${t}`)) {
+          dayJustificadas += 1.0 / turnosEsperados.length
         }
       }
-
-      if (numMissed > 0) {
-        totalJustificadas += numMissed / turnosEsperados.length
-      }
     }
+    totalJustificadas += dayJustificadas
   })
 
   return Math.round(totalJustificadas * 100) / 100

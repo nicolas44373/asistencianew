@@ -28,12 +28,14 @@ interface FormData {
   resetPassword: boolean
   nuevaPassword: string
   resetDevice: boolean
+  permitir_otra_sucursal: boolean
 }
 
 const defaultForm: FormData = {
   nombre: '', apellido: '', dni: '', email: '', password: '',
   sucursal_id: '', rol: 'empleado', activo: true,
   sueldo: '', resetPassword: false, nuevaPassword: '', resetDevice: false,
+  permitir_otra_sucursal: false,
 }
 
 export function EmpleadosClient({ empleados, sucursales }: Props) {
@@ -65,6 +67,7 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
       rol:         emp.rol,
       activo:      emp.activo,
       sueldo:      emp.sueldo != null ? String(emp.sueldo) : '',
+      permitir_otra_sucursal: emp.permitir_otra_sucursal ?? false,
     })
     setSelected(emp)
     setMode('editar')
@@ -289,6 +292,18 @@ export function EmpleadosClient({ empleados, sucursales }: Props) {
                   ))}
                 </select>
               </div>
+
+              {(form.rol === 'empleado' || form.rol === 'administracion') && (
+                <label className="flex items-center gap-2 text-sm mt-1">
+                  <input
+                    type="checkbox"
+                    checked={form.permitir_otra_sucursal}
+                    onChange={e => f('permitir_otra_sucursal', e.target.checked)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Permitir fichar desde cualquier sucursal
+                </label>
+              )}
 
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">

@@ -74,9 +74,17 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
 
   // Estado para justificaciones
   const [justificando, setJustificando]   = useState<JustificandoState | null>(null)
-  const [justForm, setJustForm]           = useState<{ justificada: boolean; tipo: TipoJustificacion; motivo: string }>({ justificada: true, tipo: 'regular', motivo: '' })
+  const [justForm, setJustForm]           = useState<{ justificada: boolean; tipo: TipoJustificacion; turno: Turno | 'all'; motivo: string }>({ justificada: true, tipo: 'regular', turno: 'all', motivo: '' })
   const [justLoading, setJustLoading]     = useState(false)
   const [justError, setJustError]         = useState<string | null>(null)
+
+  const esJuanBJusto = useMemo(() => {
+    if (!justificando) return false
+    const emp = empleados.find(e => e.id === justificando.empleado_id)
+    if (!emp) return false
+    const sucursal = sucursales.find(s => s.id === emp.sucursal_id)
+    return sucursal?.nombre.toLowerCase().includes('juan b') ?? false
+  }, [justificando, empleados, sucursales])
 
   // Mapa rápido empleado_id → justificacion (para la fecha seleccionada)
   const justMap = useMemo(() => {
@@ -260,13 +268,14 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
     }
   }
 
-  function abrirJustificacion(emp: { id: string; nombre: string; apellido: string }) {
+  function abrirJustificacion(emp: { id: string; nombre: string; apellido: string }, turno?: Turno) {
     const existente = justMap.get(emp.id) ?? null
     const parsed = parseJustificacionMotivo(existente?.motivo ?? '')
     setJustificando({ empleado_id: emp.id, nombre: `${emp.apellido}, ${emp.nombre}`, existente })
     setJustForm({
       justificada: existente?.justificada ?? true,
       tipo: existente ? parsed.tipo : 'regular',
+      turno: (existente ? parsed.turno : (turno ?? 'all')) as Turno | 'all',
       motivo: existente ? parsed.texto : '',
     })
     setJustError(null)
@@ -278,7 +287,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
     setJustLoading(true)
     setJustError(null)
     try {
-      const dbMotivo = serializeJustificacionMotivo(justForm.tipo, justForm.motivo)
+      const dbMotivo = serializeJustificacionMotivo(justForm.tipo, justForm.motivo, justForm.turno)
       const res = await fetch('/api/admin/justificaciones', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -500,8 +509,15 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
                               Ausente
                             </span>
-                            {just ? (() => {
+                            {(() => {
+                              if (!just) {
+                                return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600">Sin justificar</span>
+                              }
                               const parsed = parseJustificacionMotivo(just.motivo)
+                              const aplicaATurno = parsed.turno === 'all' || parsed.turno === turno
+                              if (!aplicaATurno) {
+                                return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600">Sin justificar</span>
+                              }
                               if (!just.justificada) {
                                 return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Injustificada</span>
                               }
@@ -512,9 +528,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                                 return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 font-semibold">Media Jornada</span>
                               }
                               return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Justificada</span>
-                            })() : (
-                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600">Sin justificar</span>
-                            )}
+                            })()}
                           </>
                         )}
                       </div>
@@ -555,14 +569,12 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                             >
                               Registrar
                             </button>
-                            {isFirstOfEmployee && (
-                              <button
-                                onClick={() => abrirJustificacion(emp)}
-                                className="text-violet-600 hover:text-violet-800 text-sm font-medium"
-                              >
-                                {just ? 'Ver Justif.' : 'Justificar'}
-                              </button>
-                            )}
+                            <button
+                              onClick={() => abrirJustificacion(emp, turno)}
+                              className="text-violet-600 hover:text-violet-800 text-sm font-medium"
+                            >
+                              {just ? 'Ver Justif.' : 'Justificar'}
+                            </button>
                           </>
                         )}
                       </div>
@@ -653,6 +665,22 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     <span>No pierde presentismo. No suma inasistencias en el mes.</span>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Turno a Justificar
+                </label>
+                <select
+                  value={justForm.turno}
+                  onChange={e => setJustForm(f => ({ ...f, turno: e.target.value as Turno | 'all' }))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 capitalize"
+                >
+                  <option value="all">Día completo</option>
+                  <option value="mañana">Turno Mañana</option>
+                  <option value="tarde">Turno Tarde</option>
+                  {!esJuanBJusto && <option value="unico">Turno Único</option>}
+                </select>
               </div>
 
               <div>

@@ -127,27 +127,41 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   [estaticos])
 
   const fechasInjustificadasExplicitas = useMemo(() => {
-    if (esLibre || !estaticos) return new Set<string>()
-    return new Set(justificaciones.filter(j => !j.justificada).map(j => j.fecha))
-  }, [esLibre, estaticos, justificaciones])
+    if (!estaticos) return new Set<string>()
+    const set = new Set<string>()
+    justificaciones.filter(j => !j.justificada).forEach(j => {
+      const parsed = parseJustificacionMotivo(j.motivo)
+      const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+      set.add(key)
+    })
+    return set
+  }, [estaticos, justificaciones])
 
   const fechasFeriadoOMediaJornada = useMemo(() => {
-    if (esLibre || !estaticos) return new Set<string>()
-    return new Set(
-      justificaciones
-        .filter(j => j.justificada && (j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada')))
-        .map(j => j.fecha)
-    )
-  }, [esLibre, estaticos, justificaciones])
+    if (!estaticos) return new Set<string>()
+    const set = new Set<string>()
+    justificaciones.filter(j => j.justificada).forEach(j => {
+      const parsed = parseJustificacionMotivo(j.motivo)
+      if (parsed.tipo === 'feriado' || parsed.tipo === 'media_jornada') {
+        const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+        set.add(key)
+      }
+    })
+    return set
+  }, [estaticos, justificaciones])
 
   const fechasJust = useMemo(() => {
-    if (esLibre || !estaticos) return new Set<string>()
-    return new Set(
-      justificaciones
-        .filter(j => j.justificada && !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada'))
-        .map(j => j.fecha)
-    )
-  }, [esLibre, estaticos, justificaciones])
+    if (!estaticos) return new Set<string>()
+    const set = new Set<string>()
+    justificaciones.filter(j => j.justificada).forEach(j => {
+      const parsed = parseJustificacionMotivo(j.motivo)
+      if (parsed.tipo !== 'feriado' && parsed.tipo !== 'media_jornada') {
+        const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+        set.add(key)
+      }
+    })
+    return set
+  }, [estaticos, justificaciones])
 
   const inasistencias = useMemo(() =>
     !esLibre && estaticos
@@ -173,7 +187,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       fecha: string
       turno: Turno
       registro: RegistroAsistencia | null
-      estado: 'a_tiempo' | 'tardanza' | 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado'
+      estado: 'a_tiempo' | 'tardanza' | 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado' | 'sin_registrar'
       egreso_anticipado?: boolean
       minutos_extra?: number
       hora_entrada?: string | null
@@ -197,7 +211,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       const fechaStr = `${year}-${mm}-${dd}`
 
       if (fechaStr < primerDiaStr) continue
-      if (fechaStr >= hoyStr) continue
+      if (fechaStr > hoyStr) continue
 
       const diaSemana = new Date(year, month - 1, dia).getDay()
       const esSabado = diaSemana === 6
@@ -234,17 +248,23 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
           })
         } else {
           let estado: any = 'ausente_sin_justificar'
+          if (fechaStr === hoyStr) {
+            estado = 'sin_registrar'
+          }
           if (just) {
-            if (!just.justificada) {
-              estado = 'ausente_injustificado'
-            } else {
-              const parsed = parseJustificacionMotivo(just.motivo)
-              if (parsed.tipo === 'feriado') {
-                estado = 'ausente_feriado'
-              } else if (parsed.tipo === 'media_jornada') {
-                estado = 'ausente_media_jornada'
+            const parsed = parseJustificacionMotivo(just.motivo)
+            const aplicaATurno = parsed.turno === 'all' || parsed.turno === turno
+            if (aplicaATurno) {
+              if (!just.justificada) {
+                estado = 'ausente_injustificado'
               } else {
-                estado = 'ausente_justificado'
+                if (parsed.tipo === 'feriado') {
+                  estado = 'ausente_feriado'
+                } else if (parsed.tipo === 'media_jornada') {
+                  estado = 'ausente_media_jornada'
+                } else {
+                  estado = 'ausente_justificado'
+                }
               }
             }
           }
@@ -273,7 +293,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       minutosExtra: number
       estaCompleto: boolean
       enCurso: boolean
-      estadoAusencia?: 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado'
+      estadoAusencia?: 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado' | 'sin_registrar'
       tieneJustificacion: boolean
     }> = []
 
@@ -291,7 +311,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       const fechaStr = `${year}-${mm}-${dd}`
 
       if (fechaStr < primerDiaStr) continue
-      if (fechaStr >= hoyStr) continue
+      if (fechaStr > hoyStr) continue
 
       const diaSemana = new Date(year, month - 1, dia).getDay()
       const esLaboralLibre = diaSemana >= 1 && diaSemana <= 6 // Lunes a Sábado
@@ -309,6 +329,9 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         })
       } else if (esLaboralLibre || just) {
         let estadoAusencia: any = 'ausente_sin_justificar'
+        if (fechaStr === hoyStr) {
+          estadoAusencia = 'sin_registrar'
+        }
         if (just) {
           if (!just.justificada) {
             estadoAusencia = 'ausente_injustificado'
@@ -556,6 +579,9 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                                 {dia.estadoAusencia === 'ausente_sin_justificar' && (
                                   <Chip text="Ausente" color="orange" />
                                 )}
+                                {dia.estadoAusencia === 'sin_registrar' && (
+                                  <Chip text="Sin registrar" color="orange" />
+                                )}
                               </>
                             )}
                           </div>
@@ -656,6 +682,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                         {item.estado === 'tardanza' && <Chip text="Tardanza" color="red" />}
                         {item.estado === 'a_tiempo' && <Chip text="A tiempo" color="green" />}
                         {item.estado === 'ausente_sin_justificar' && <Chip text="Ausente" color="orange" />}
+                        {item.estado === 'sin_registrar' && <Chip text="Sin registrar" color="orange" />}
                         {item.estado === 'ausente_injustificado' && <Chip text="Injustificado" color="red" />}
                         {item.estado === 'ausente_justificado' && <Chip text="Justificado" color="green" />}
                         {item.estado === 'ausente_feriado' && <Chip text="Feriado" color="blue" />}

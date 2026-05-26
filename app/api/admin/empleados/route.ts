@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { nombre, apellido, dni, email, password, sucursal_id, rol, sueldo } = body
+    const { nombre, apellido, dni, email, password, sucursal_id, rol, sueldo, permitir_otra_sucursal } = body
 
     if (!nombre || !apellido || !sucursal_id) {
       return NextResponse.json({ error: 'Campos incompletos' }, { status: 400 })
@@ -68,6 +68,7 @@ export async function POST(request: NextRequest) {
         sucursal_id,
         rol:         rolFinal,
         sueldo:      sueldo ? Number(sueldo) : null,
+        permitir_otra_sucursal: !!permitir_otra_sucursal,
       })
 
     if (empErr) {

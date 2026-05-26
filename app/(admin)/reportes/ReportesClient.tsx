@@ -7,6 +7,7 @@ import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
 import { calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
+import { parseJustificacionMotivo } from '@/lib/utils/justificaciones'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
 
@@ -64,17 +65,23 @@ export function ReportesClient({
       const horariosEmp = esJuanBJusto ? rawHorariosEmp.filter(h => h.turno !== 'unico') : rawHorariosEmp
       const fechaIngreso     = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
       const justifiedRows = justificaciones.filter(j => j.empleado_id === emp.id && j.justificada)
-      const fechasFeriadoOMediaJornada = new Set(
-        justifiedRows
-          .filter(j => j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada'))
-          .map(j => j.fecha)
-      )
-      const fechasJust = new Set(
-        justifiedRows
-          .filter(j => !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada'))
-          .map(j => j.fecha)
-      )
-      const fechasInjust     = new Set(justificaciones.filter(j => j.empleado_id === emp.id && !j.justificada).map(j => j.fecha))
+      const fechasFeriadoOMediaJornada = new Set<string>()
+      const fechasJust = new Set<string>()
+      justifiedRows.forEach(j => {
+        const parsed = parseJustificacionMotivo(j.motivo)
+        const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+        if (parsed.tipo === 'feriado' || parsed.tipo === 'media_jornada') {
+          fechasFeriadoOMediaJornada.add(key)
+        } else {
+          fechasJust.add(key)
+        }
+      })
+      const fechasInjust = new Set<string>()
+      justificaciones.filter(j => j.empleado_id === emp.id && !j.justificada).forEach(j => {
+        const parsed = parseJustificacionMotivo(j.motivo)
+        const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
+        fechasInjust.add(key)
+      })
       const isLibre          = emp.rol === 'administracion'
       const inasistencias    = isLibre
         ? calcularInasistenciasLibre(regsEmp, mes, fechaIngreso, fechasInjust, fechasFeriadoOMediaJornada)
