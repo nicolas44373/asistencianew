@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
   if (admin?.rol !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const body = await request.json()
-  const { empleado_id, fecha, hora_entrada, hora_salida, motivo_edicion } = body
+  const { empleado_id, fecha, hora_entrada, hora_salida, motivo_edicion, turno: bodyTurno } = body
 
   if (!motivo_edicion?.trim()) {
     return NextResponse.json({ error: 'El motivo es obligatorio' }, { status: 400 })
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
   const diaSemana = new Date(fy, fm - 1, fd).getDay()
   const esSabado  = diaSemana === 6
 
-  const esLibre = empleado?.rol === 'administracion' && !esSabado
+  const esLibre = empleado?.rol === 'administracion' && diaSemana >= 1 && diaSemana <= 6
 
   let turno: Turno
   let tarde               = false
@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
       .eq('fecha', fecha)
 
     const bloques = bloquesExistentes ?? []
-    turno = bloques.length === 0 ? 'mañana' : 'tarde'
+    turno = bodyTurno ?? (bloques.length === 0 ? 'mañana' : 'tarde')
 
     if (salidaDate) {
       let totalMs = salidaDate.getTime() - entradaDate.getTime()
@@ -75,7 +75,8 @@ export async function POST(request: NextRequest) {
         }
       }
       const totalMin = Math.floor(totalMs / 60_000)
-      minutosExtra = Math.max(0, totalMin - 480)
+      const metaMinutos = esSabado ? 330 : 480
+      minutosExtra = Math.max(0, totalMin - metaMinutos)
 
       // Resetear extras de bloques previos ya cerrados
       const cerrados = bloques.filter((b: { hora_entrada: string | null; hora_salida: string | null }) => b.hora_entrada && b.hora_salida)
@@ -100,11 +101,13 @@ export async function POST(request: NextRequest) {
     for (const h of (personales ?? []) as HorarioSucursal[]) schedMap.set(h.turno, h)
     const horarios = Array.from(schedMap.values())
 
-    // Detectar el turno más apropiado según la hora de entrada
-    const horario = detectarHorarioPorHora(entradaDate, horarios) ?? horarios[0]
+    // Si el admin envía un turno, buscamos ese horario. Si no, detectamos el más apropiado por la hora.
+    const horario = bodyTurno
+      ? (horarios.find(h => h.turno === bodyTurno) ?? horarios[0])
+      : (detectarHorarioPorHora(entradaDate, horarios) ?? horarios[0])
 
     if (horario) {
-      turno = horario.turno
+      turno = bodyTurno ?? horario.turno
       tarde = calcularTarde(entradaDate, horario)
       // No se calculan extras: el turno auto-detectado puede no reflejar el horario real
       // del empleado (ej: mañana detecta entrada a las 8:30 pero trabajó hasta las 20:30).
@@ -113,7 +116,7 @@ export async function POST(request: NextRequest) {
         egresoAnticipado = calcularEgresoAnticipado(salidaDate, horario)
       }
     } else {
-      turno = 'mañana'
+      turno = bodyTurno ?? 'mañana'
     }
   }
 
@@ -134,7 +137,12 @@ export async function POST(request: NextRequest) {
     .select()
     .single()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json({ error: 'Ya existe un registro para este empleado, fecha y turno.' }, { status: 400 })
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
   return NextResponse.json({ ok: true, registro: nuevo })
 }
 

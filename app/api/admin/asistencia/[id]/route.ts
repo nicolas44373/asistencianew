@@ -45,8 +45,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   const diaSemana = new Date(fy, fm - 1, fd).getDay()
   const esSabado  = diaSemana === 6
 
-  // Empleados administracion en días de semana no tienen horario de referencia
-  const esLibre = empleado?.rol === 'administracion' && !esSabado
+  // Empleados administracion en días de semana y sábados no tienen horario de referencia
+  const esLibre = empleado?.rol === 'administracion' && diaSemana >= 1 && diaSemana <= 6
 
   if (esLibre) {
     const { error } = await supabase
@@ -59,10 +59,16 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         minutos_extra:     0,
         editado_por:       user.id,
         motivo_edicion,
+        turno,
       })
       .eq('id', params.id)
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) {
+      if (error.code === '23505') {
+        return NextResponse.json({ error: 'Ya existe un registro para este empleado, fecha y turno.' }, { status: 400 })
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
 
     // Recalcular extra del día completo y reasignar al último bloque cerrado
     await recalcularDiaLibre(supabase, empleado_id, fecha)
@@ -98,10 +104,51 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       minutos_extra:     minutosExtra,
       editado_por:       user.id,
       motivo_edicion,
+      turno,
     })
     .eq('id', params.id)
 
+  if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json({ error: 'Ya existe un registro para este empleado, fecha y turno.' }, { status: 400 })
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  return NextResponse.json({ ok: true })
+}
+
+export async function DELETE(request: NextRequest, { params }: Params) {
+  const supabase = createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+
+  const { data: admin } = await supabase
+    .from('empleados').select('rol').eq('id', user.id).single()
+  if (admin?.rol !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  // Traer el registro antes de borrar para saber el empleado_id y fecha si es libre
+  const { data: reg } = await supabase
+    .from('registros_asistencia')
+    .select('empleado_id, fecha')
+    .eq('id', params.id)
+    .single()
+
+  const { error } = await supabase
+    .from('registros_asistencia')
+    .delete()
+    .eq('id', params.id)
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  if (reg) {
+    const { data: emp } = await supabase
+      .from('empleados').select('rol').eq('id', reg.empleado_id).single()
+    if (emp?.rol === 'administracion') {
+      await recalcularDiaLibre(supabase, reg.empleado_id, reg.fecha)
+    }
+  }
 
   return NextResponse.json({ ok: true })
 }
@@ -127,8 +174,12 @@ async function recalcularDiaLibre(supabase: any, empleadoId: string, fecha: stri
     }
   }
 
+  const [y, m, d] = fecha.split('-').map(Number)
+  const isSabado = new Date(y, m - 1, d).getDay() === 6
+  const metaMinutos = isSabado ? 330 : 480
+
   const totalMin = Math.floor(totalMs / 60_000)
-  const extra    = Math.max(0, totalMin - 480)
+  const extra    = Math.max(0, totalMin - metaMinutos)
 
   // Poner 0 en todos los cerrados y extra solo en el último
   await Promise.all(

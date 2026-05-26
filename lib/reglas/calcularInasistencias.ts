@@ -3,14 +3,14 @@ import { fechaHoyLocal } from '@/lib/utils/tiempo'
 
 /**
  * Itera sobre todos los días laborales de un mes y llama al callback
- * con (fecha, tieneRegistro) para cada día que debía trabajar.
+ * con (fecha, turnosEsperados, registrosDelDia) para cada día que debía trabajar.
  */
 function iterarDiasLaborales(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean }[],
+  horarios: { es_sabado: boolean; turno: string }[],
   mes: string,
   fechaIngreso: string | undefined,
-  callback: (fecha: string, tieneRegistro: boolean) => void
+  callback: (fecha: string, turnosEsperados: string[], registrosDelDia: RegistroAsistencia[]) => void
 ) {
   if (horarios.length === 0) return
 
@@ -24,10 +24,6 @@ function iterarDiasLaborales(
     ? (fechaIngreso > `${mes}-01` ? fechaIngreso : `${mes}-01`)
     : `${mes}-01`
 
-  const fechasConRegistro = new Set(
-    registros.filter(r => r.hora_entrada).map(r => r.fecha)
-  )
-
   const diasEnMes = new Date(year, month, 0).getDate()
 
   for (let dia = 1; dia <= diasEnMes; dia++) {
@@ -40,57 +36,114 @@ function iterarDiasLaborales(
 
     const diaSemana = new Date(year, month - 1, dia).getDay()
 
+    const esSabado = diaSemana === 6
     const esDiaLaboral =
       (diaSemana >= 1 && diaSemana <= 5 && tieneHorarioSemana) ||
-      (diaSemana === 6 && tieneHorarioSabado)
+      (esSabado && tieneHorarioSabado)
 
     if (!esDiaLaboral) continue
 
-    callback(fechaStr, fechasConRegistro.has(fechaStr))
+    // Turnos esperados para este día
+    const turnosEsperados = horarios
+      .filter(h => h.es_sabado === esSabado)
+      .map(h => h.turno)
+
+    if (turnosEsperados.length === 0) continue
+
+    // Registros que tiene el empleado para esta fecha
+    const registrosDelDia = registros.filter(r => r.fecha === fechaStr && r.hora_entrada != null)
+
+    callback(fechaStr, turnosEsperados, registrosDelDia)
   }
 }
 
 /**
- * Cuenta días laborales donde el empleado no tuvo ningún registro de entrada.
- * Solo considera días estrictamente anteriores a hoy y posteriores o iguales
- * a fechaIngreso (fecha local de alta del empleado, "YYYY-MM-DD").
+ * Cuenta días laborales donde el empleado no tuvo registros de entrada para sus turnos.
+ * Devuelve un número fraccionado si falta a alguno de los turnos programados (ej. 0.5 si falta a 1 de 2 turnos).
  */
 export function calcularInasistencias(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean }[],
+  horarios: { es_sabado: boolean; turno: string }[],
   mes: string,
   fechaIngreso?: string,
-  fechasInjustificadasExplicitas: Set<string> = new Set()
+  fechasInjustificadasExplicitas: Set<string> = new Set(),
+  fechasFeriadoOMediaJornada: Set<string> = new Set()
 ): number {
-  const fechasAusentes = new Set<string>()
+  let totalInasistencias = 0
+  const fechasProcesadas = new Set<string>()
 
-  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, tieneRegistro) => {
-    if (!tieneRegistro) fechasAusentes.add(fecha)
+  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, turnosEsperados, registrosDelDia) => {
+    fechasProcesadas.add(fecha)
+
+    // Si es feriado o media jornada, no suma inasistencia
+    if (fechasFeriadoOMediaJornada.has(fecha)) {
+      return
+    }
+
+    // Si la fecha está explícitamente marcada como injustificada por el admin, cuenta como inasistencia total (1.0)
+    if (fechasInjustificadasExplicitas.has(fecha)) {
+      totalInasistencias += 1.0
+      return
+    }
+
+    const turnosRegistrados = new Set(registrosDelDia.map(r => r.turno as string))
+    let numMissed = 0
+    for (const t of turnosEsperados) {
+      if (!turnosRegistrados.has(t)) {
+        numMissed++
+      }
+    }
+
+    if (numMissed > 0) {
+      totalInasistencias += numMissed / turnosEsperados.length
+    }
   })
 
-  // Sumar fechas con marcación explícita de injustificada (incluso con asistencia parcial).
-  // El Set evita doble conteo si la fecha ya estaba como ausente total.
-  for (const fecha of fechasInjustificadasExplicitas) {
-    fechasAusentes.add(fecha)
-  }
+  // Añadir marcaciones explícitas para fechas que no hayan entrado en la iteración laboral
+  fechasInjustificadasExplicitas.forEach(fecha => {
+    if (!fechasProcesadas.has(fecha)) {
+      totalInasistencias += 1.0
+    }
+  })
 
-  return fechasAusentes.size
+  return Math.round(totalInasistencias * 100) / 100
 }
 
 /**
  * Cuenta cuántas de las inasistencias del empleado en el mes
- * están cubiertas por el set de fechas justificadas.
+ * están cubiertas por el set de fechas justificadas (de forma proporcional si es ausencia parcial).
  */
 export function calcularInasistenciasJustificadas(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean }[],
+  horarios: { es_sabado: boolean; turno: string }[],
   mes: string,
   fechasJustificadas: Set<string>,
-  fechaIngreso?: string
+  fechaIngreso?: string,
+  fechasFeriadoOMediaJornada: Set<string> = new Set()
 ): number {
-  let justificadas = 0
-  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, tieneRegistro) => {
-    if (!tieneRegistro && fechasJustificadas.has(fecha)) justificadas++
+  let totalJustificadas = 0
+
+  iterarDiasLaborales(registros, horarios, mes, fechaIngreso, (fecha, turnosEsperados, registrosDelDia) => {
+    // Si es feriado o media jornada, no cuenta como inasistencia justificada
+    if (fechasFeriadoOMediaJornada.has(fecha)) {
+      return
+    }
+
+    if (fechasJustificadas.has(fecha)) {
+      const turnosRegistrados = new Set(registrosDelDia.map(r => r.turno as string))
+      let numMissed = 0
+      for (const t of turnosEsperados) {
+        if (!turnosRegistrados.has(t)) {
+          numMissed++
+        }
+      }
+
+      if (numMissed > 0) {
+        totalJustificadas += numMissed / turnosEsperados.length
+      }
+    }
   })
-  return justificadas
+
+  return Math.round(totalJustificadas * 100) / 100
 }
+

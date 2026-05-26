@@ -104,14 +104,15 @@ export async function POST(request: NextRequest) {
     const ahora    = new Date()
     const fechaHoy = fechaHoyLocal()
 
-    // 7. Empleados administracion en días de semana usan lógica de bloques libres
+    // 7. Empleados administracion en días de semana y sábados usan lógica de bloques libres
     const rolEmpleado = (empleado as { rol?: string }).rol
-    const esDiaSemana = (() => {
+    const esDiaLaboralLibre = (() => {
       const local = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
-      return local.getDay() >= 1 && local.getDay() <= 5
+      const day = local.getDay()
+      return day >= 1 && day <= 6 // Lunes a Sábado
     })()
 
-    if (rolEmpleado === 'administracion' && esDiaSemana) {
+    if (rolEmpleado === 'administracion' && esDiaLaboralLibre) {
       const respuesta = await manejarFichajeLibre(supabase, user.id, fechaHoy, ahora)
 
       if (!empleado.device_id) {
@@ -300,8 +301,11 @@ async function manejarFichajeLibre(
     for (const b of bloquesCerrados) {
       totalMs += new Date(b.hora_salida!).getTime() - new Date(b.hora_entrada!).getTime()
     }
+    const [y, m, d] = fechaHoy.split('-').map(Number)
+    const isSabado = new Date(y, m - 1, d).getDay() === 6
+    const metaMinutos = isSabado ? 330 : 480
     const totalMin  = Math.floor(totalMs / 60_000)
-    const extra     = Math.max(0, totalMin - 480)
+    const extra     = Math.max(0, totalMin - metaMinutos)
 
     // Poner minutos_extra = 0 en los bloques anteriores, el total va en el que cierra
     if (bloquesCerrados.length > 0) {

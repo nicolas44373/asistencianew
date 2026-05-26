@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import type { RegistroAsistencia, Sucursal, HorarioSucursal, Justificacion } from '@/lib/types/database'
+import type { RegistroAsistencia, Sucursal, HorarioSucursal, Justificacion, HorarioEmpleado, Turno } from '@/lib/types/database'
 import { formatHora, formatMinutos } from '@/lib/utils/tiempo'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
+import { parseJustificacionMotivo, serializeJustificacionMotivo, TipoJustificacion } from '@/lib/utils/justificaciones'
 
 interface EmpleadoAnidado {
   id: string; nombre: string; apellido: string
@@ -19,6 +20,7 @@ interface Props {
   sucursales: Sucursal[]
   empleados: Array<{ id: string; nombre: string; apellido: string; sucursal_id: string | null }>
   horarios: HorarioSucursal[]
+  horariosPersonales: HorarioEmpleado[]
   justificaciones: Justificacion[]
   fechaInicial: string
   filtros: { sucursal_id?: string; empleado_id?: string }
@@ -34,12 +36,14 @@ interface EditForm {
   hora_entrada: string
   hora_salida: string
   motivo_edicion: string
+  turno: string
 }
 
 interface RegistroNuevoForm {
   hora_entrada: string
   hora_salida: string
   motivo_edicion: string
+  turno: string
 }
 
 interface RegistrandoState {
@@ -57,20 +61,20 @@ function horaActualLocal(): string {
   })
 }
 
-export function AsistenciaClient({ registros, sucursales, empleados, horarios, justificaciones, fechaInicial, filtros }: Props) {
+export function AsistenciaClient({ registros, sucursales, empleados, horarios, horariosPersonales, justificaciones, fechaInicial, filtros }: Props) {
   const router = useRouter()
   const [fecha, setFecha]         = useState(fechaInicial)
   const [sucursalId, setSucursal] = useState(filtros.sucursal_id ?? '')
   const [empleadoId, setEmpleado] = useState(filtros.empleado_id ?? '')
   const [editando, setEditando]   = useState<RegistroConEmp | null>(null)
-  const [editForm, setEditForm]   = useState<EditForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '' })
+  const [editForm, setEditForm]   = useState<EditForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '', turno: 'mañana' })
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState<string | null>(null)
   const [selectedEmpleadoId, setSelectedEmpleadoId] = useState<string | null>(null)
 
   // Estado para justificaciones
   const [justificando, setJustificando]   = useState<JustificandoState | null>(null)
-  const [justForm, setJustForm]           = useState<{ justificada: boolean; motivo: string }>({ justificada: true, motivo: '' })
+  const [justForm, setJustForm]           = useState<{ justificada: boolean; tipo: TipoJustificacion; motivo: string }>({ justificada: true, tipo: 'regular', motivo: '' })
   const [justLoading, setJustLoading]     = useState(false)
   const [justError, setJustError]         = useState<string | null>(null)
 
@@ -83,33 +87,106 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
 
   // Estado para registro manual
   const [registrando, setRegistrando] = useState<RegistrandoState | null>(null)
-  const [regForm, setRegForm]         = useState<RegistroNuevoForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '' })
+  const [regForm, setRegForm]         = useState<RegistroNuevoForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '', turno: 'mañana' })
   const [regLoading, setRegLoading]   = useState(false)
   const [regError, setRegError]       = useState<string | null>(null)
 
-  // Empleados que debían trabajar ese día pero no tienen ningún registro
-  const ausentes = useMemo(() => {
+  // Turnos disponibles para el empleado seleccionado
+  const turnosDisponibles = useMemo(() => {
+    if (!registrando && !editando) return ['mañana', 'tarde', 'unico']
+    const empId = registrando?.empleado_id || editando?.empleado_id
+    const emp = empleados.find(e => e.id === empId)
+    if (!emp) return ['mañana', 'tarde', 'unico']
+
+    const sucursal = sucursales.find(s => s.id === emp.sucursal_id)
+    const esJuanBJusto = sucursal?.nombre.toLowerCase().includes('juan b')
+
+    // Buscar horarios configurados para este empleado o sucursal
+    const personalTurnos = horariosPersonales.filter(h => h.empleado_id === emp.id).map(h => h.turno)
+    if (personalTurnos.length > 0) {
+      const uniquePersonal = Array.from(new Set(personalTurnos))
+      return esJuanBJusto ? uniquePersonal.filter(t => t !== 'unico') : uniquePersonal
+    }
+
+    const sucursalTurnos = horarios.filter(h => h.sucursal_id === emp.sucursal_id).map(h => h.turno)
+    if (sucursalTurnos.length > 0) {
+      const uniqueSucursal = Array.from(new Set(sucursalTurnos))
+      return esJuanBJusto ? uniqueSucursal.filter(t => t !== 'unico') : uniqueSucursal
+    }
+
+    return esJuanBJusto ? ['mañana', 'tarde'] : ['mañana', 'tarde', 'unico']
+  }, [registrando, editando, empleados, horarios, horariosPersonales, sucursales])
+
+  // Ajustar el turno seleccionado si no está en la lista de disponibles
+  useEffect(() => {
+    if (registrando && !turnosDisponibles.includes(regForm.turno)) {
+      setRegForm(f => ({ ...f, turno: turnosDisponibles[0] || 'mañana' }))
+    }
+  }, [registrando, turnosDisponibles, regForm.turno])
+
+  useEffect(() => {
+    if (editando && !turnosDisponibles.includes(editForm.turno)) {
+      setEditForm(f => ({ ...f, turno: turnosDisponibles[0] || 'mañana' }))
+    }
+  }, [editando, turnosDisponibles, editForm.turno])
+
+  // Precalcula y unifica filas para cada turno esperado de los empleados
+  const rowsToRender = useMemo(() => {
+    const rows: Array<{
+      emp: typeof empleados[0]
+      sucursalNombre: string
+      turno: Turno
+      registro: RegistroConEmp | null
+      just: Justificacion | null
+      isFirstOfEmployee: boolean
+      rowSpan: number
+    }> = []
+
     const [y, m, d]  = fechaInicial.split('-').map(Number)
     const diaSemana  = new Date(y, m - 1, d).getDay() // 0=Dom … 6=Sab
-    const conRegistro = new Set(registros.map(r => r.empleado_id))
+    const esSabado   = diaSemana === 6
 
-    return empleados.filter(emp => {
-      if (filtros.empleado_id && emp.id !== filtros.empleado_id) return false
-      if (filtros.sucursal_id && emp.sucursal_id !== filtros.sucursal_id) return false
-      if (conRegistro.has(emp.id)) return false
+    for (const emp of empleados) {
+      if (empleadoId && emp.id !== empleadoId) continue
+      if (sucursalId && emp.sucursal_id !== sucursalId) continue
 
-      const horariosEmp = horarios.filter(h => h.sucursal_id === emp.sucursal_id)
-      if (horariosEmp.length === 0) return false
+      const sucursalNombre = sucursales.find(s => s.id === emp.sucursal_id)?.nombre ?? '—'
+      const esJuanBJusto = sucursalNombre.toLowerCase().includes('juan b')
+      const just = justMap.get(emp.id) ?? null
 
-      const tieneHorarioSemana = horariosEmp.some(h => !h.es_sabado)
-      const tieneHorarioSabado = horariosEmp.some(h => h.es_sabado)
+      // Horario personal tiene prioridad
+      const empPersonales = horariosPersonales.filter(h => h.empleado_id === emp.id && h.es_sabado === esSabado)
+      const horariosEmp = empPersonales.length > 0
+        ? empPersonales
+        : horarios.filter(h => h.sucursal_id === emp.sucursal_id && h.es_sabado === esSabado)
 
-      return (
-        (diaSemana >= 1 && diaSemana <= 5 && tieneHorarioSemana) ||
-        (diaSemana === 6 && tieneHorarioSabado)
-      )
-    })
-  }, [fechaInicial, registros, empleados, horarios, filtros])
+      const turnosProgramados = horariosEmp.map(h => h.turno)
+      const regsEmp = registros.filter(r => r.empleado_id === emp.id)
+      
+      // Combinar turnos programados y los turnos que realmente tienen registros
+      const turnosAMostrar = Array.from(new Set([
+        ...turnosProgramados,
+        ...regsEmp.map(r => r.turno).filter((t): t is Turno => t !== null)
+      ])).filter(t => !(esJuanBJusto && t === 'unico'))
+
+      if (turnosAMostrar.length === 0) continue
+
+      turnosAMostrar.forEach((turno, index) => {
+        const registro = regsEmp.find(r => r.turno === turno) ?? null
+        rows.push({
+          emp,
+          sucursalNombre,
+          turno,
+          registro,
+          just,
+          isFirstOfEmployee: index === 0,
+          rowSpan: turnosAMostrar.length
+        })
+      })
+    }
+
+    return rows
+  }, [fechaInicial, sucursalId, empleadoId, registros, empleados, horarios, horariosPersonales, sucursales, justMap])
 
   function aplicarFiltros() {
     const params = new URLSearchParams({ fecha })
@@ -124,6 +201,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
       hora_entrada: r.hora_entrada ? formatHoraInput(r.hora_entrada) : '',
       hora_salida:  r.hora_salida  ? formatHoraInput(r.hora_salida)  : '',
       motivo_edicion: '',
+      turno: r.turno ?? 'mañana',
     })
     setError(null)
   }
@@ -148,7 +226,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
           hora_entrada: editForm.hora_entrada,
           hora_salida:  editForm.hora_salida,
           motivo_edicion: editForm.motivo_edicion,
-          turno: editando.turno,
+          turno: editForm.turno,
           empleado_id: editando.empleado_id,
         }),
       })
@@ -164,10 +242,33 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
     }
   }
 
+  async function eliminarRegistro(id: string) {
+    if (!confirm('¿Estás seguro de que deseas eliminar este registro de asistencia?')) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/admin/asistencia/${id}`, {
+        method: 'DELETE',
+      })
+      const json = await res.json()
+      if (!res.ok) { setError(json.error ?? 'Error'); return }
+      router.refresh()
+    } catch {
+      setError('Error de conexión')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   function abrirJustificacion(emp: { id: string; nombre: string; apellido: string }) {
     const existente = justMap.get(emp.id) ?? null
+    const parsed = parseJustificacionMotivo(existente?.motivo ?? '')
     setJustificando({ empleado_id: emp.id, nombre: `${emp.apellido}, ${emp.nombre}`, existente })
-    setJustForm({ justificada: existente?.justificada ?? true, motivo: existente?.motivo ?? '' })
+    setJustForm({
+      justificada: existente?.justificada ?? true,
+      tipo: existente ? parsed.tipo : 'regular',
+      motivo: existente ? parsed.texto : '',
+    })
     setJustError(null)
   }
 
@@ -177,6 +278,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
     setJustLoading(true)
     setJustError(null)
     try {
+      const dbMotivo = serializeJustificacionMotivo(justForm.tipo, justForm.motivo)
       const res = await fetch('/api/admin/justificaciones', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -184,7 +286,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
           empleado_id: justificando.empleado_id,
           fecha,
           justificada: justForm.justificada,
-          motivo: justForm.motivo || null,
+          motivo: dbMotivo || null,
         }),
       })
       const json = await res.json()
@@ -209,7 +311,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
       )
       const json = await res.json()
       if (!res.ok) { setJustError(json.error ?? 'Error'); return }
-      setJustificando(null)
+      justificando && setJustificando(null)
       router.refresh()
     } catch {
       setJustError('Error de conexión')
@@ -218,16 +320,16 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
     }
   }
 
-  function abrirRegistroIngreso(emp: { id: string; nombre: string; apellido: string }) {
+  function abrirRegistroIngreso(emp: { id: string; nombre: string; apellido: string }, turno: string = 'mañana') {
     setRegistrando({ empleado_id: emp.id, nombre: `${emp.apellido}, ${emp.nombre}`, tipo: 'ingreso' })
-    setRegForm({ hora_entrada: horaActualLocal(), hora_salida: '', motivo_edicion: '' })
+    setRegForm({ hora_entrada: horaActualLocal(), hora_salida: '', motivo_edicion: '', turno })
     setRegError(null)
   }
 
   function abrirRegistroSalida(r: RegistroConEmp) {
     const nombre = r.empleados ? `${r.empleados.apellido}, ${r.empleados.nombre}` : '—'
     setRegistrando({ empleado_id: r.empleado_id, nombre, tipo: 'salida', registroId: r.id, turno: r.turno ?? undefined })
-    setRegForm({ hora_entrada: r.hora_entrada ? formatHoraInput(r.hora_entrada) : '', hora_salida: horaActualLocal(), motivo_edicion: '' })
+    setRegForm({ hora_entrada: r.hora_entrada ? formatHoraInput(r.hora_entrada) : '', hora_salida: horaActualLocal(), motivo_edicion: '', turno: r.turno ?? 'mañana' })
     setRegError(null)
   }
 
@@ -267,6 +369,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
             hora_entrada:   regForm.hora_entrada,
             hora_salida:    regForm.hora_salida || null,
             motivo_edicion: regForm.motivo_edicion,
+            turno:          regForm.turno,
           }),
         })
         const json = await res.json()
@@ -344,112 +447,124 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {registros.length === 0 && (
+              {rowsToRender.length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-6 py-10 text-center text-gray-400">
                     Sin registros para este filtro
                   </td>
                 </tr>
               )}
-              {registros.map(r => {
-                const emp = r.empleados
+              {rowsToRender.map(({ emp, sucursalNombre, turno, registro, just, isFirstOfEmployee, rowSpan }, index) => {
+                const uniqueKey = `${emp.id}-${turno}`
                 return (
-                  <tr key={r.id} className="hover:bg-gray-50">
-                    <td
-                      className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
-                      onClick={() => emp && setSelectedEmpleadoId(emp.id)}
-                    >
-                      {emp?.apellido}, {emp?.nombre}
+                  <tr key={uniqueKey} className={`hover:bg-gray-50/50 ${isFirstOfEmployee && index > 0 ? 'border-t border-gray-200' : ''}`}>
+                    {isFirstOfEmployee && (
+                      <>
+                        <td
+                          rowSpan={rowSpan}
+                          className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline align-middle"
+                          onClick={() => setSelectedEmpleadoId(emp.id)}
+                        >
+                          {emp.apellido}, {emp.nombre}
+                        </td>
+                        <td rowSpan={rowSpan} className="px-6 py-4 text-gray-600 align-middle">
+                          {sucursalNombre}
+                        </td>
+                      </>
+                    )}
+                    <td className="px-6 py-4 text-gray-600 capitalize font-medium">{turno}</td>
+                    <td className="px-6 py-4 font-mono text-gray-700">
+                      {registro?.hora_entrada ? formatHora(registro.hora_entrada) : '—'}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">{emp?.sucursales?.nombre ?? '—'}</td>
-                    <td className="px-6 py-4 text-gray-600 capitalize">{r.turno ?? '—'}</td>
-                    <td className="px-6 py-4 font-mono">{r.hora_entrada ? formatHora(r.hora_entrada) : '—'}</td>
-                    <td className="px-6 py-4 font-mono">{r.hora_salida  ? formatHora(r.hora_salida)  : '—'}</td>
+                    <td className="px-6 py-4 font-mono text-gray-700">
+                      {registro?.hora_salida ? formatHora(registro.hora_salida) : '—'}
+                    </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-1">
-                        {r.tarde ? (
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Tardanza</span>
+                        {registro ? (
+                          <>
+                            {registro.tarde ? (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Tardanza</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">A tiempo</span>
+                            )}
+                            {registro.egreso_anticipado && (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Retiro ant.</span>
+                            )}
+                            {registro.editado_por && (
+                              <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">Editado</span>
+                            )}
+                          </>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">A tiempo</span>
-                        )}
-                        {r.egreso_anticipado && (
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Retiro ant.</span>
-                        )}
-                        {r.editado_por && (
-                          <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">Editado</span>
+                          <>
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
+                              Ausente
+                            </span>
+                            {just ? (() => {
+                              const parsed = parseJustificacionMotivo(just.motivo)
+                              if (!just.justificada) {
+                                return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Injustificada</span>
+                              }
+                              if (parsed.tipo === 'feriado') {
+                                return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 font-semibold">Feriado</span>
+                              }
+                              if (parsed.tipo === 'media_jornada') {
+                                return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 font-semibold">Media Jornada</span>
+                              }
+                              return <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Justificada</span>
+                            })() : (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600">Sin justificar</span>
+                            )}
+                          </>
                         )}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-gray-600">
-                      {r.minutos_extra > 0 ? formatMinutos(r.minutos_extra) : '—'}
+                      {registro && registro.minutos_extra > 0 ? formatMinutos(registro.minutos_extra) : '—'}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex gap-3 items-center">
-                        <button
-                          onClick={() => abrirEdicion(r)}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                        >
-                          Editar
-                        </button>
-                        {r.hora_entrada && !r.hora_salida && (
-                          <button
-                            onClick={() => abrirRegistroSalida(r)}
-                            className="text-emerald-600 hover:text-emerald-800 text-sm font-medium"
-                          >
-                            Reg. salida
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-
-              {/* Filas de ausentes */}
-              {ausentes.map(emp => {
-                const sucursalNombre = sucursales.find(s => s.id === emp.sucursal_id)?.nombre ?? '—'
-                const just = justMap.get(emp.id)
-                return (
-                  <tr key={`ausente-${emp.id}`} className="bg-gray-50/60">
-                    <td
-                      className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
-                      onClick={() => setSelectedEmpleadoId(emp.id)}
-                    >
-                      {emp.apellido}, {emp.nombre}
-                    </td>
-                    <td className="px-6 py-4 text-gray-500">{sucursalNombre}</td>
-                    <td className="px-6 py-4 text-gray-400">—</td>
-                    <td className="px-6 py-4 text-gray-400">—</td>
-                    <td className="px-6 py-4 text-gray-400">—</td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-wrap gap-1 items-center">
-                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
-                          Ausente
-                        </span>
-                        {just ? (
-                          just.justificada
-                            ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Justificada</span>
-                            : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Injustificada</span>
+                      <div className="flex gap-2 items-center flex-wrap">
+                        {registro ? (
+                          <>
+                            <button
+                              onClick={() => abrirEdicion(registro)}
+                              className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                            >
+                              Editar
+                            </button>
+                            {registro.hora_entrada && !registro.hora_salida && (
+                              <button
+                                onClick={() => abrirRegistroSalida(registro)}
+                                className="text-emerald-600 hover:text-emerald-800 text-sm font-medium"
+                              >
+                                Salida
+                              </button>
+                            )}
+                            <button
+                              onClick={() => eliminarRegistro(registro.id)}
+                              className="text-red-500 hover:text-red-700 text-sm font-medium"
+                            >
+                              Eliminar
+                            </button>
+                          </>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600">Sin justificar</span>
+                          <>
+                            <button
+                              onClick={() => abrirRegistroIngreso(emp, turno)}
+                              className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
+                            >
+                              Registrar
+                            </button>
+                            {isFirstOfEmployee && (
+                              <button
+                                onClick={() => abrirJustificacion(emp)}
+                                className="text-violet-600 hover:text-violet-800 text-sm font-medium"
+                              >
+                                {just ? 'Ver Justif.' : 'Justificar'}
+                              </button>
+                            )}
+                          </>
                         )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-gray-400">—</td>
-                    <td className="px-6 py-4">
-                      <div className="flex gap-3 items-center">
-                        <button
-                          onClick={() => abrirJustificacion(emp)}
-                          className="text-violet-600 hover:text-violet-800 text-sm font-medium"
-                        >
-                          {just ? 'Ver/Editar' : 'Justificar'}
-                        </button>
-                        <button
-                          onClick={() => abrirRegistroIngreso(emp)}
-                          className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
-                        >
-                          Registrar
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -476,30 +591,67 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
 
             <form onSubmit={guardarJustificacion} className="space-y-4">
               <div>
-                <p className="text-xs font-medium text-gray-700 mb-2">¿La inasistencia está justificada?</p>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="justificada"
-                      checked={justForm.justificada}
-                      onChange={() => setJustForm(f => ({ ...f, justificada: true }))}
-                      className="accent-green-600"
-                    />
-                    <span className="text-sm font-medium text-green-700">Justificada</span>
-                    <span className="text-xs text-gray-400">(no pierde presentismo)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="justificada"
-                      checked={!justForm.justificada}
-                      onChange={() => setJustForm(f => ({ ...f, justificada: false }))}
-                      className="accent-red-600"
-                    />
-                    <span className="text-sm font-medium text-red-700">Injustificada</span>
-                    <span className="text-xs text-gray-400">(pierde presentismo)</span>
-                  </label>
+                <p className="text-xs font-medium text-gray-700 mb-2">Estado de inasistencia</p>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setJustForm(f => ({ ...f, justificada: true, tipo: 'regular' }))}
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
+                      justForm.justificada && justForm.tipo === 'regular'
+                        ? 'bg-green-50 border-green-200 text-green-700 font-semibold'
+                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Justificada (Común)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJustForm(f => ({ ...f, justificada: false, tipo: 'regular' }))}
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
+                      !justForm.justificada
+                        ? 'bg-red-50 border-red-200 text-red-700 font-semibold'
+                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Injustificada
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJustForm(f => ({ ...f, justificada: true, tipo: 'feriado' }))}
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
+                      justForm.justificada && justForm.tipo === 'feriado'
+                        ? 'bg-blue-50 border-blue-200 text-blue-700 font-semibold'
+                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Feriado
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJustForm(f => ({ ...f, justificada: true, tipo: 'media_jornada' }))}
+                    className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
+                      justForm.justificada && justForm.tipo === 'media_jornada'
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold'
+                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Media Jornada
+                  </button>
+                </div>
+                
+                <div className="text-xs text-gray-505 bg-gray-50 rounded-lg p-2.5">
+                  {justForm.justificada && justForm.tipo === 'regular' && (
+                    <span>No pierde presentismo. Cuenta como inasistencia justificada.</span>
+                  )}
+                  {!justForm.justificada && (
+                    <span>Pierde presentismo. Cuenta como inasistencia injustificada.</span>
+                  )}
+                  {justForm.justificada && justForm.tipo === 'feriado' && (
+                    <span>No pierde presentismo. No suma inasistencias en el mes.</span>
+                  )}
+                  {justForm.justificada && justForm.tipo === 'media_jornada' && (
+                    <span>No pierde presentismo. No suma inasistencias en el mes.</span>
+                  )}
                 </div>
               </div>
 
@@ -511,7 +663,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
                   value={justForm.motivo}
                   onChange={e => setJustForm(f => ({ ...f, motivo: e.target.value }))}
                   rows={2}
-                  placeholder="Ej: turno médico, accidente, etc."
+                  placeholder="Ej: turno médico, feriado nacional, etc."
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
                 />
               </div>
@@ -564,18 +716,37 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
 
             <form onSubmit={guardarRegistro} className="space-y-4">
               {registrando.tipo === 'ingreso' && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Hora de entrada <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="time"
-                    value={regForm.hora_entrada}
-                    onChange={e => setRegForm(f => ({ ...f, hora_entrada: e.target.value }))}
-                    required
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Turno <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={regForm.turno}
+                      onChange={e => setRegForm(f => ({ ...f, turno: e.target.value }))}
+                      required
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 capitalize"
+                    >
+                      {turnosDisponibles.map(t => (
+                        <option key={t} value={t}>
+                          {t === 'unico' ? 'Único' : t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Hora de entrada <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={regForm.hora_entrada}
+                      onChange={e => setRegForm(f => ({ ...f, hora_entrada: e.target.value }))}
+                      required
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </>
               )}
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
@@ -639,6 +810,20 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, j
             </p>
 
             <form onSubmit={guardarEdicion} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Turno</label>
+                <select
+                  value={editForm.turno}
+                  onChange={e => setEditForm(f => ({ ...f, turno: e.target.value }))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 capitalize"
+                >
+                  {turnosDisponibles.map(t => (
+                    <option key={t} value={t}>
+                      {t === 'unico' ? 'Único' : t}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Hora entrada</label>
                 <input

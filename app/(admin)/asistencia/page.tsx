@@ -13,7 +13,13 @@ export default async function AsistenciaPage({
   const fecha = searchParams.fecha ?? fechaHoyLocal()
 
   // Queries independientes en paralelo
-  const [{ data: sucursales }, { data: empleados }, { data: horarios }, { data: justificaciones }] = await Promise.all([
+  const [
+    { data: sucursales },
+    { data: empleados },
+    { data: horarios },
+    { data: horariosPersonales },
+    { data: justificaciones }
+  ] = await Promise.all([
     supabase.from('sucursales').select('id, nombre').order('nombre'),
     supabase.from('empleados')
       .select('id, nombre, apellido, sucursal_id')
@@ -21,6 +27,7 @@ export default async function AsistenciaPage({
       .neq('rol', 'admin')
       .order('apellido'),
     supabase.from('horarios_sucursal').select('*'),
+    supabase.from('horarios_empleado').select('*'),
     supabase.from('justificaciones').select('*').eq('fecha', fecha),
   ])
 
@@ -55,6 +62,7 @@ export default async function AsistenciaPage({
         sucursales={sucursales ?? []}
         empleados={empleados ?? []}
         horarios={horarios ?? []}
+        horariosPersonales={horariosPersonales ?? []}
         justificaciones={justificaciones ?? []}
         fechaInicial={fecha}
         filtros={searchParams}

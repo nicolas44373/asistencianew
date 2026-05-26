@@ -6,9 +6,10 @@ import { createClient } from '@/lib/supabase/client'
 import { formatHora, formatFecha, formatMinutos, nombreMes } from '@/lib/utils/tiempo'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
-import { agruparPorDia, calcularInasistenciasLibre } from '@/lib/reglas/calcularHorasLibres'
+import { agruparPorDia, calcularDiaLibre, calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
 import { format } from 'date-fns-tz'
-import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado, Justificacion } from '@/lib/types/database'
+import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado, Justificacion, Turno } from '@/lib/types/database'
+import { parseJustificacionMotivo } from '@/lib/utils/justificaciones'
 
 const TZ = 'America/Argentina/Buenos_Aires'
 
@@ -108,11 +109,18 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   const esLibre = estaticos?.empleado.rol === 'administracion'
 
   // ── Cálculos memoizados ───────────────────────────────────────
-  const horariosEfectivos = useMemo(() =>
-    estaticos
-      ? (estaticos.horariosPersonales.length > 0 ? estaticos.horariosPersonales : estaticos.horarios)
-      : [],
-  [estaticos])
+  const horariosEfectivos = useMemo(() => {
+    if (!estaticos) return []
+    const rawHorarios = estaticos.horariosPersonales.length > 0
+      ? estaticos.horariosPersonales
+      : estaticos.horarios
+
+    const esJuanBJusto = estaticos.empleado.sucursales?.nombre.toLowerCase().includes('juan b')
+    if (esJuanBJusto) {
+      return rawHorarios.filter(h => h.turno !== 'unico')
+    }
+    return rawHorarios
+  }, [estaticos])
 
   const fechaIngreso = useMemo(() =>
     estaticos ? new Date(estaticos.empleado.created_at).toLocaleDateString('sv-SE', { timeZone: TZ }) : undefined,
@@ -123,31 +131,218 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
     return new Set(justificaciones.filter(j => !j.justificada).map(j => j.fecha))
   }, [esLibre, estaticos, justificaciones])
 
+  const fechasFeriadoOMediaJornada = useMemo(() => {
+    if (esLibre || !estaticos) return new Set<string>()
+    return new Set(
+      justificaciones
+        .filter(j => j.justificada && (j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada')))
+        .map(j => j.fecha)
+    )
+  }, [esLibre, estaticos, justificaciones])
+
+  const fechasJust = useMemo(() => {
+    if (esLibre || !estaticos) return new Set<string>()
+    return new Set(
+      justificaciones
+        .filter(j => j.justificada && !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada'))
+        .map(j => j.fecha)
+    )
+  }, [esLibre, estaticos, justificaciones])
+
   const inasistencias = useMemo(() =>
     !esLibre && estaticos
-      ? calcularInasistencias(registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas)
+      ? calcularInasistencias(registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada)
       : 0,
-  [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas])
+  [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada])
 
   const inasistenciasJustificadas = useMemo(() => {
-    if (esLibre || !estaticos) return 0
-    const fechasJust = new Set(justificaciones.filter(j => j.justificada).map(j => j.fecha))
-    return calcularInasistenciasJustificadas(registros, horariosEfectivos, mes, fechasJust, fechaIngreso)
+    if (!estaticos) return 0
+    if (esLibre) {
+      return calcularInasistenciasJustificadasLibre(registros, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
+    }
+    return calcularInasistenciasJustificadas(registros, horariosEfectivos, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
+  }, [esLibre, estaticos, registros, horariosEfectivos, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada])
+
+
+
+  const registrosYInasistencias = useMemo(() => {
+    if (esLibre || !estaticos) return []
+
+    const items: Array<{
+      id: string
+      fecha: string
+      turno: Turno
+      registro: RegistroAsistencia | null
+      estado: 'a_tiempo' | 'tardanza' | 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado'
+      egreso_anticipado?: boolean
+      minutos_extra?: number
+      hora_entrada?: string | null
+      hora_salida?: string | null
+    }> = []
+
+    const [year, month] = mes.split('-').map(Number)
+    const hoyStr = format(new Date(), 'yyyy-MM-dd', { timeZone: TZ })
+    const primerDiaStr = fechaIngreso
+      ? (fechaIngreso > `${mes}-01` ? fechaIngreso : `${mes}-01`)
+      : `${mes}-01`
+
+    const tieneHorarioSemana = horariosEfectivos.some(h => !h.es_sabado)
+    const tieneHorarioSabado = horariosEfectivos.some(h => h.es_sabado)
+
+    const ultimoDiaEnMes = new Date(year, month, 0).getDate()
+
+    for (let dia = ultimoDiaEnMes; dia >= 1; dia--) {
+      const mm  = String(month).padStart(2, '0')
+      const dd  = String(dia).padStart(2, '0')
+      const fechaStr = `${year}-${mm}-${dd}`
+
+      if (fechaStr < primerDiaStr) continue
+      if (fechaStr >= hoyStr) continue
+
+      const diaSemana = new Date(year, month - 1, dia).getDay()
+      const esSabado = diaSemana === 6
+      const esDiaLaboral =
+        (diaSemana >= 1 && diaSemana <= 5 && tieneHorarioSemana) ||
+        (esSabado && tieneHorarioSabado)
+
+      const turnosEsperados = esDiaLaboral
+        ? horariosEfectivos.filter(h => h.es_sabado === esSabado).map(h => h.turno)
+        : []
+
+      const regsDia = registros.filter(r => r.fecha === fechaStr)
+      const esJuanBJusto = estaticos.empleado.sucursales?.nombre.toLowerCase().includes('juan b')
+      const turnosAMostrar = Array.from(new Set([
+        ...turnosEsperados,
+        ...regsDia.map(r => r.turno).filter((t): t is Turno => t !== null)
+      ])).filter(t => !(esJuanBJusto && t === 'unico'))
+
+      const just = justificaciones.find(j => j.fecha === fechaStr)
+
+      turnosAMostrar.forEach(turno => {
+        const reg = regsDia.find(r => r.turno === turno) || null
+        if (reg) {
+          items.push({
+            id: reg.id,
+            fecha: fechaStr,
+            turno,
+            registro: reg,
+            estado: reg.tarde ? 'tardanza' : 'a_tiempo',
+            egreso_anticipado: reg.egreso_anticipado,
+            minutos_extra: reg.minutos_extra,
+            hora_entrada: reg.hora_entrada,
+            hora_salida: reg.hora_salida,
+          })
+        } else {
+          let estado: any = 'ausente_sin_justificar'
+          if (just) {
+            if (!just.justificada) {
+              estado = 'ausente_injustificado'
+            } else {
+              const parsed = parseJustificacionMotivo(just.motivo)
+              if (parsed.tipo === 'feriado') {
+                estado = 'ausente_feriado'
+              } else if (parsed.tipo === 'media_jornada') {
+                estado = 'ausente_media_jornada'
+              } else {
+                estado = 'ausente_justificado'
+              }
+            }
+          }
+
+          items.push({
+            id: `ausente-${fechaStr}-${turno}`,
+            fecha: fechaStr,
+            turno,
+            registro: null,
+            estado,
+          })
+        }
+      })
+    }
+
+    return items
   }, [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, justificaciones])
 
-  const resumen = useMemo(() =>
-    !esLibre && estaticos
-      ? calcularMes(registros, estaticos.empleado.sueldo ?? 0, estaticos.montoPresentismo, inasistencias, inasistenciasJustificadas, fechasInjustificadasExplicitas)
-      : null,
-  [esLibre, estaticos, registros, inasistencias, inasistenciasJustificadas, fechasInjustificadasExplicitas])
+  const diasPorFecha = useMemo(() => {
+    if (!esLibre || !estaticos) return []
 
-  const diasPorFecha = useMemo(() =>
-    esLibre ? agruparPorDia(registros) : [],
-  [esLibre, registros])
+    const items: Array<{
+      fecha: string
+      registros: RegistroAsistencia[]
+      minutosTotal: number
+      minutosExtra: number
+      estaCompleto: boolean
+      enCurso: boolean
+      estadoAusencia?: 'ausente_sin_justificar' | 'ausente_justificado' | 'ausente_feriado' | 'ausente_media_jornada' | 'ausente_injustificado'
+      tieneJustificacion: boolean
+    }> = []
+
+    const [year, month] = mes.split('-').map(Number)
+    const hoyStr = format(new Date(), 'yyyy-MM-dd', { timeZone: TZ })
+    const primerDiaStr = fechaIngreso
+      ? (fechaIngreso > `${mes}-01` ? fechaIngreso : `${mes}-01`)
+      : `${mes}-01`
+
+    const ultimoDiaEnMes = new Date(year, month, 0).getDate()
+
+    for (let dia = ultimoDiaEnMes; dia >= 1; dia--) {
+      const mm  = String(month).padStart(2, '0')
+      const dd  = String(dia).padStart(2, '0')
+      const fechaStr = `${year}-${mm}-${dd}`
+
+      if (fechaStr < primerDiaStr) continue
+      if (fechaStr >= hoyStr) continue
+
+      const diaSemana = new Date(year, month - 1, dia).getDay()
+      const esLaboralLibre = diaSemana >= 1 && diaSemana <= 6 // Lunes a Sábado
+
+      const regsDia = registros.filter(r => r.fecha === fechaStr)
+      const just = justificaciones.find(j => j.fecha === fechaStr)
+
+      if (regsDia.length > 0) {
+        const stats = calcularDiaLibre(regsDia, fechaStr)
+        items.push({
+          fecha: fechaStr,
+          registros: regsDia,
+          ...stats,
+          tieneJustificacion: false,
+        })
+      } else if (esLaboralLibre || just) {
+        let estadoAusencia: any = 'ausente_sin_justificar'
+        if (just) {
+          if (!just.justificada) {
+            estadoAusencia = 'ausente_injustificado'
+          } else {
+            const parsed = parseJustificacionMotivo(just.motivo)
+            if (parsed.tipo === 'feriado') {
+              estadoAusencia = 'ausente_feriado'
+            } else if (parsed.tipo === 'media_jornada') {
+              estadoAusencia = 'ausente_media_jornada'
+            } else {
+              estadoAusencia = 'ausente_justificado'
+            }
+          }
+        }
+
+        items.push({
+          fecha: fechaStr,
+          registros: [],
+          minutosTotal: 0,
+          minutosExtra: 0,
+          estaCompleto: false,
+          enCurso: false,
+          estadoAusencia,
+          tieneJustificacion: !!just,
+        })
+      }
+    }
+
+    return items
+  }, [esLibre, estaticos, registros, mes, fechaIngreso, justificaciones])
 
   const inasistenciasLibre = useMemo(() =>
-    esLibre ? calcularInasistenciasLibre(registros, mes, fechaIngreso) : 0,
-  [esLibre, registros, mes, fechaIngreso])
+    esLibre ? calcularInasistenciasLibre(registros, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada) : 0,
+  [esLibre, registros, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada])
 
   const statsLibre = useMemo(() => {
     const diasTrabajados  = diasPorFecha.filter(d => d.registros.some(r => r.hora_entrada)).length
@@ -157,6 +352,41 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
     const montoExtra      = parseFloat(((minutosExtra / 60) * valorHora).toFixed(2))
     return { diasTrabajados, diasCompletos, diasIncompletos: diasTrabajados - diasCompletos, minutosExtra, montoExtra }
   }, [diasPorFecha, estaticos])
+
+  const resumen = useMemo(() => {
+    if (!estaticos) return null
+    if (esLibre) {
+      const valorHora = (estaticos.empleado.sueldo ?? 0) / 180
+      const minutosExtra = statsLibre.minutosExtra
+      const montoExtra = parseFloat(((minutosExtra / 60) * valorHora).toFixed(2))
+      const inas = inasistenciasLibre
+      const inasJust = inasistenciasJustificadas
+      const pierdePres = (inas - inasJust) > 0 || fechasInjustificadasExplicitas.size > 0
+      const presentismo = pierdePres ? 0 : estaticos.montoPresentismo
+      const totalLiquidar = parseFloat((montoExtra + presentismo).toFixed(2))
+
+      return {
+        diasTrabajados: statsLibre.diasTrabajados,
+        tardanzas: 0,
+        inasistencias: inas,
+        inasistenciasJustificadas: inasJust,
+        minutosExtraTotal: minutosExtra,
+        horasExtraFormato: formatMinutos(minutosExtra),
+        montoExtra,
+        presentismo,
+        totalLiquidar
+      }
+    }
+
+    return calcularMes(
+      registros,
+      estaticos.empleado.sueldo ?? 0,
+      estaticos.montoPresentismo,
+      inasistencias,
+      inasistenciasJustificadas,
+      fechasInjustificadasExplicitas
+    )
+  }, [esLibre, estaticos, registros, inasistencias, inasistenciasJustificadas, fechasInjustificadasExplicitas, inasistenciasLibre, statsLibre])
 
   const loading = loadingEstaticos || loadingRegistros
 
@@ -239,26 +469,40 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
           ) : !estaticos ? (
             <p className="text-center text-gray-400 py-10">No se pudo cargar la información</p>
           ) : esLibre ? (
-            // ── Vista libre (administracion, lunes-viernes) ──────────
+            // ── Vista libre (administracion, lunes-sábado) ──────────
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                 <StatCard label="Días" value={statsLibre.diasTrabajados} />
                 <StatCard label="Días completos" value={statsLibre.diasCompletos} />
-                <StatCard label="Días < 8 hs" value={statsLibre.diasIncompletos} danger={statsLibre.diasIncompletos > 0} />
+                <StatCard label="Días incompletos" value={statsLibre.diasIncompletos} danger={statsLibre.diasIncompletos > 0} />
                 <StatCard label="Hs extra" value={formatMinutos(statsLibre.minutosExtra)} />
               </div>
 
-              <div className="bg-gray-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                <span className="text-gray-500">
-                  Inasistencias:{' '}
-                  <span className={inasistenciasLibre > 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
-                    {inasistenciasLibre}
+              {resumen && (
+                <div className="bg-gray-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                  <span className="text-gray-500">
+                    Inasistencias:{' '}
+                    <span className={resumen.inasistencias > 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
+                      {resumen.inasistencias}
+                    </span>
+                    {resumen.inasistenciasJustificadas > 0 && (
+                      <span className="text-green-600 text-xs ml-1">({resumen.inasistenciasJustificadas} justif.)</span>
+                    )}
                   </span>
-                </span>
-                <span className="text-gray-500">
-                  Extras: <span className="text-gray-800 font-semibold">{fmt(statsLibre.montoExtra)}</span>
-                </span>
-              </div>
+                  <span className="text-gray-500">
+                    Presentismo:{' '}
+                    <span className={resumen.presentismo === 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
+                      {fmt(resumen.presentismo)}
+                    </span>
+                  </span>
+                  <span className="text-gray-500">
+                    Extras: <span className="text-gray-800 font-semibold">{fmt(resumen.montoExtra)}</span>
+                  </span>
+                  <span className="ml-auto text-gray-500">
+                    Total: <span className="text-gray-900 font-bold text-base">{fmt(resumen.totalLiquidar)}</span>
+                  </span>
+                </div>
+              )}
 
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                 Registros del mes
@@ -272,39 +516,80 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                 <p className="text-gray-400 text-sm text-center py-8">Sin registros en este período</p>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {diasPorFecha.map(dia => (
-                    <div key={dia.fecha} className="py-3">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-xs font-semibold text-gray-500">
-                          {formatFecha(dia.fecha + 'T12:00:00')}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {dia.enCurso ? (
-                            <Chip text="En curso" color="blue" />
-                          ) : dia.estaCompleto ? (
-                            <Chip text={formatMinutos(dia.minutosTotal)} color="green" />
-                          ) : (
-                            <Chip text={`${formatMinutos(dia.minutosTotal)} / 8h`} color="orange" />
-                          )}
-                          {dia.minutosExtra > 0 && (
-                            <Chip text={`+${formatMinutos(dia.minutosExtra)}`} color="blue" />
-                          )}
-                        </div>
-                      </div>
-                      <div className="space-y-1 pl-1">
-                        {dia.registros.map((r, i) => (
-                          <div key={r.id} className="flex items-center gap-2 text-sm text-gray-700">
-                            <span className="text-xs text-gray-400 w-14 shrink-0">Bloque {i + 1}</span>
-                            <span className="font-mono">
-                              {r.hora_entrada ? formatHora(r.hora_entrada) : '—'}
-                              <span className="text-gray-300 mx-1">→</span>
-                              {r.hora_salida ? formatHora(r.hora_salida) : <span className="text-gray-300">—</span>}
-                            </span>
+                  {diasPorFecha.map(dia => {
+                    const [y, m, d] = dia.fecha.split('-').map(Number)
+                    const isSab = new Date(y, m - 1, d).getDay() === 6
+                    return (
+                      <div key={dia.fecha} className="py-3">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs font-semibold text-gray-500">
+                            {formatFecha(dia.fecha + 'T12:00:00')}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {dia.registros.length > 0 ? (
+                              <>
+                                {dia.enCurso ? (
+                                  <Chip text="En curso" color="blue" />
+                                ) : dia.estaCompleto ? (
+                                  <Chip text={formatMinutos(dia.minutosTotal)} color="green" />
+                                ) : (
+                                  <Chip text={`${formatMinutos(dia.minutosTotal)} / ${isSab ? '5h 30m' : '8h'}`} color="orange" />
+                                )}
+                                {dia.minutosExtra > 0 && (
+                                  <Chip text={`+${formatMinutos(dia.minutosExtra)}`} color="blue" />
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                {dia.estadoAusencia === 'ausente_feriado' && (
+                                  <Chip text="Feriado" color="green" />
+                                )}
+                                {dia.estadoAusencia === 'ausente_media_jornada' && (
+                                  <Chip text="Media Jornada" color="green" />
+                                )}
+                                {dia.estadoAusencia === 'ausente_justificado' && (
+                                  <Chip text="Justificado" color="green" />
+                                )}
+                                {dia.estadoAusencia === 'ausente_injustificado' && (
+                                  <Chip text="Injustificado" color="red" />
+                                )}
+                                {dia.estadoAusencia === 'ausente_sin_justificar' && (
+                                  <Chip text="Ausente" color="orange" />
+                                )}
+                              </>
+                            )}
                           </div>
-                        ))}
+                        </div>
+                        {dia.registros.length > 0 ? (
+                          <div className="space-y-1 pl-1">
+                            {dia.registros.map((r, i) => (
+                              <div key={r.id} className="flex items-center gap-2 text-sm text-gray-700">
+                                <span className="text-xs text-gray-400 w-14 shrink-0">Bloque {i + 1}</span>
+                                <span className="font-mono">
+                                  {r.hora_entrada ? formatHora(r.hora_entrada) : '—'}
+                                  <span className="text-gray-300 mx-1">→</span>
+                                  {r.hora_salida ? formatHora(r.hora_salida) : <span className="text-gray-300">—</span>}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          dia.tieneJustificacion && (
+                            <p className="text-xs text-gray-500 pl-1 italic">
+                              Motivo: {
+                                (() => {
+                                  const just = justificaciones.find(j => j.fecha === dia.fecha)
+                                  if (!just) return ''
+                                  const parsed = parseJustificacionMotivo(just.motivo)
+                                  return parsed.texto || 'Sin especificar'
+                                })()
+                              }
+                            </p>
+                          )
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </>
@@ -350,30 +635,36 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                 <div className="space-y-2">
                   {[1, 2, 3].map(i => <div key={i} className="h-10 bg-gray-100 rounded-xl animate-pulse" />)}
                 </div>
-              ) : registros.length === 0 ? (
-                <p className="text-gray-400 text-sm text-center py-8">Sin registros en este período</p>
+              ) : registrosYInasistencias.length === 0 ? (
+                <p className="text-gray-400 text-sm text-center py-8">Sin registros ni inasistencias en este período</p>
               ) : (
                 <div className="divide-y divide-gray-100">
-                  {registros.map(r => (
-                    <div key={r.id} className="flex items-center gap-3 py-2.5">
-                      <span className="text-xs text-gray-400 w-16 shrink-0">
-                        {formatFecha(r.fecha + 'T12:00:00')}
+                  {registrosYInasistencias.map(item => (
+                    <div key={item.id} className="flex items-center gap-3 py-2.5">
+                      <span className="text-xs text-gray-400 w-16 shrink-0 font-medium">
+                        {formatFecha(item.fecha + 'T12:00:00')}
                       </span>
-                      <span className="text-xs text-gray-400 w-10 shrink-0 capitalize">
-                        {r.turno ?? '—'}
+                      <span className="text-xs text-gray-400 w-12 shrink-0 capitalize">
+                        {item.turno ?? '—'}
                       </span>
                       <span className="font-mono text-sm text-gray-700">
-                        {r.hora_entrada ? formatHora(r.hora_entrada) : '—'}
+                        {item.hora_entrada ? formatHora(item.hora_entrada) : '—'}
                         <span className="text-gray-300 mx-1">→</span>
-                        {r.hora_salida ? formatHora(r.hora_salida) : <span className="text-gray-300">—</span>}
+                        {item.hora_salida ? formatHora(item.hora_salida) : <span className="text-gray-300">—</span>}
                       </span>
                       <div className="ml-auto flex gap-1 flex-wrap justify-end">
-                        {r.tarde && <Chip text="Tardanza" color="red" />}
-                        {r.egreso_anticipado && <Chip text="Salida ant." color="orange" />}
-                        {r.minutos_extra > 0 && <Chip text={`+${formatMinutos(r.minutos_extra)}`} color="blue" />}
-                        {!r.tarde && !r.egreso_anticipado && r.hora_entrada && (
-                          <Chip text="A tiempo" color="green" />
-                        )}
+                        {item.estado === 'tardanza' && <Chip text="Tardanza" color="red" />}
+                        {item.estado === 'a_tiempo' && <Chip text="A tiempo" color="green" />}
+                        {item.estado === 'ausente_sin_justificar' && <Chip text="Ausente" color="orange" />}
+                        {item.estado === 'ausente_injustificado' && <Chip text="Injustificado" color="red" />}
+                        {item.estado === 'ausente_justificado' && <Chip text="Justificado" color="green" />}
+                        {item.estado === 'ausente_feriado' && <Chip text="Feriado" color="blue" />}
+                        {item.estado === 'ausente_media_jornada' && <Chip text="Media Jornada" color="blue" />}
+                        
+                        {item.egreso_anticipado && <Chip text="Salida ant." color="orange" />}
+                        {item.minutos_extra ? item.minutos_extra > 0 ? (
+                          <Chip text={`+${formatMinutos(item.minutos_extra)}`} color="blue" />
+                        ) : null : null}
                       </div>
                     </div>
                   ))}

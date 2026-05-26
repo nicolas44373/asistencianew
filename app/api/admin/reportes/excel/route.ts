@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
+import { calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
 import type { HorarioSucursal, HorarioEmpleado, RegistroAsistencia } from '@/lib/types/database'
 import ExcelJS from 'exceljs'
 import { format } from 'date-fns-tz'
@@ -348,11 +349,11 @@ export async function GET(request: NextRequest) {
     { data: justificaciones },
   ] = await Promise.all([
     empQuery,
-    supabase.from('registros_asistencia').select('empleado_id, fecha, hora_entrada, tarde, minutos_extra').gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('registros_asistencia').select('empleado_id, fecha, hora_entrada, tarde, minutos_extra, turno').gte('fecha', desde).lte('fecha', hasta),
     supabase.from('config_liquidacion').select('monto_presentismo').lte('vigente_desde', hasta).order('vigente_desde', { ascending: false }).limit(1).single(),
     supabase.from('horarios_sucursal').select('*'),
     supabase.from('horarios_empleado').select('*'),
-    supabase.from('justificaciones').select('empleado_id, fecha, justificada').gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('justificaciones').select('empleado_id, fecha, justificada, motivo').gte('fecha', desde).lte('fecha', hasta),
   ])
 
   const montoPresentismo = config ? Number(config.monto_presentismo) : 0
@@ -373,12 +374,17 @@ export async function GET(request: NextRequest) {
     const regs    = ((registros ?? []) as RegistroAsistencia[]).filter(r => r.empleado_id === emp.id)
     const sueldo  = Number(emp.sueldo ?? 0)
     const pers    = horPorEmp.get(emp.id) ?? []
-    const horEf   = pers.length > 0 ? pers : (emp.sucursal_id ? horPorSuc.get(emp.sucursal_id) ?? [] : [])
+    const rawHorEf = pers.length > 0 ? pers : (emp.sucursal_id ? horPorSuc.get(emp.sucursal_id) ?? [] : [])
+    const esJuanBJusto = (emp.sucursales as { nombre: string } | null)?.nombre.toLowerCase().includes('juan b')
+    const horEf = esJuanBJusto ? rawHorEf.filter(h => h.turno !== 'unico') : rawHorEf
     const fi      = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
-    const fjust   = new Set((justificaciones ?? []).filter((j: { empleado_id: string; justificada: boolean }) => j.empleado_id === emp.id && j.justificada).map((j: { fecha: string }) => j.fecha))
-    const finjust = new Set((justificaciones ?? []).filter((j: { empleado_id: string; justificada: boolean }) => j.empleado_id === emp.id && !j.justificada).map((j: { fecha: string }) => j.fecha))
-    const inas    = calcularInasistencias(regs, horEf, mes, fi, finjust)
-    const inasJ   = calcularInasistenciasJustificadas(regs, horEf, mes, fjust, fi)
+    const justifiedRows = (justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && j.justificada)
+    const fferiadoMJ = new Set(justifiedRows.filter((j: any) => j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada')).map((j: any) => j.fecha))
+    const fjust   = new Set(justifiedRows.filter((j: any) => !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada')).map((j: any) => j.fecha))
+    const finjust = new Set((justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && !j.justificada).map((j: any) => j.fecha))
+    const isLibre = emp.rol === 'administracion'
+    const inas    = isLibre ? calcularInasistenciasLibre(regs, mes, fi, finjust, fferiadoMJ) : calcularInasistencias(regs, horEf, mes, fi, finjust, fferiadoMJ)
+    const inasJ   = isLibre ? calcularInasistenciasJustificadasLibre(regs, mes, fjust, fi, fferiadoMJ) : calcularInasistenciasJustificadas(regs, horEf, mes, fjust, fi, fferiadoMJ)
     const res     = calcularMes(regs, sueldo, montoPresentismo, inas, inasJ, finjust)
     return {
       nombre: emp.nombre, apellido: emp.apellido, dni: emp.dni as string | null,

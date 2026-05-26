@@ -10,7 +10,10 @@ interface Props {
 
 export function HistorialDia({ registros, esLibre = false }: Props) {
   // Keep useMemo so calcularDiaLibre isn't recalculated unnecessarily (used only for enCurso check)
-  const statsLibre = useMemo(() => calcularDiaLibre(registros), [registros])
+  const statsLibre = useMemo(() => {
+    const fecha = registros[0]?.fecha ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+    return calcularDiaLibre(registros, fecha)
+  }, [registros])
 
   if (registros.length === 0) {
     return (

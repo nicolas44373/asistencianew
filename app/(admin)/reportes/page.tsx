@@ -41,7 +41,7 @@ export default async function ReportesPage({
   ] = await Promise.all([
     empleadosQuery,
     supabase.from('registros_asistencia')
-      .select('empleado_id, fecha, hora_entrada, tarde, minutos_extra')
+      .select('empleado_id, fecha, hora_entrada, tarde, minutos_extra, turno')
       .gte('fecha', desde).lte('fecha', hasta),
     supabase.from('config_liquidacion')
       .select('monto_presentismo, vigente_desde, id, valor_hora_extra, created_at')
@@ -52,7 +52,7 @@ export default async function ReportesPage({
     supabase.from('sucursales').select('id, nombre').order('nombre'),
     supabase.from('horarios_sucursal').select('*'),
     supabase.from('horarios_empleado').select('*'),
-    supabase.from('justificaciones').select('empleado_id, fecha, justificada').gte('fecha', desde).lte('fecha', hasta),
+    supabase.from('justificaciones').select('empleado_id, fecha, justificada, motivo').gte('fecha', desde).lte('fecha', hasta),
   ])
 
   return (

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import type { Empleado, RegistroAsistencia, ConfigLiquidacion, Sucursal, HorarioSucursal, HorarioEmpleado } from '@/lib/types/database'
 import { calcularMes } from '@/lib/reglas/calcularMes'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
+import { calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 
 type EmpleadoRow = Empleado & { sucursales: { nombre: string } | null }
@@ -13,6 +14,7 @@ interface JustificacionRow {
   empleado_id: string
   fecha: string
   justificada: boolean
+  motivo: string | null
 }
 
 interface Props {
@@ -55,14 +57,31 @@ export function ReportesClient({
       const regsEmp          = registros.filter(r => r.empleado_id === emp.id)
       const sueldo           = emp.sueldo ?? 0
       const personales       = horariosPersonalesPorEmpleado.get(emp.id) ?? []
-      const horariosEmp      = personales.length > 0
+      const rawHorariosEmp   = personales.length > 0
         ? personales
         : (emp.sucursal_id ? (horariosPorSucursal.get(emp.sucursal_id) ?? []) : [])
+      const esJuanBJusto = emp.sucursales?.nombre.toLowerCase().includes('juan b')
+      const horariosEmp = esJuanBJusto ? rawHorariosEmp.filter(h => h.turno !== 'unico') : rawHorariosEmp
       const fechaIngreso     = new Date(emp.created_at).toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
-      const fechasJust       = new Set(justificaciones.filter(j => j.empleado_id === emp.id && j.justificada).map(j => j.fecha))
+      const justifiedRows = justificaciones.filter(j => j.empleado_id === emp.id && j.justificada)
+      const fechasFeriadoOMediaJornada = new Set(
+        justifiedRows
+          .filter(j => j.motivo?.startsWith('TIPO:feriado') || j.motivo?.startsWith('TIPO:media_jornada'))
+          .map(j => j.fecha)
+      )
+      const fechasJust = new Set(
+        justifiedRows
+          .filter(j => !j.motivo?.startsWith('TIPO:feriado') && !j.motivo?.startsWith('TIPO:media_jornada'))
+          .map(j => j.fecha)
+      )
       const fechasInjust     = new Set(justificaciones.filter(j => j.empleado_id === emp.id && !j.justificada).map(j => j.fecha))
-      const inasistencias    = calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso, fechasInjust)
-      const inasistJust      = calcularInasistenciasJustificadas(regsEmp, horariosEmp, mes, fechasJust, fechaIngreso)
+      const isLibre          = emp.rol === 'administracion'
+      const inasistencias    = isLibre
+        ? calcularInasistenciasLibre(regsEmp, mes, fechaIngreso, fechasInjust, fechasFeriadoOMediaJornada)
+        : calcularInasistencias(regsEmp, horariosEmp, mes, fechaIngreso, fechasInjust, fechasFeriadoOMediaJornada)
+      const inasistJust      = isLibre
+        ? calcularInasistenciasJustificadasLibre(regsEmp, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
+        : calcularInasistenciasJustificadas(regsEmp, horariosEmp, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
       const resumen          = calcularMes(regsEmp, sueldo, montoPresentismo, inasistencias, inasistJust, fechasInjust)
       return { empleado: emp, resumen }
     })
@@ -148,23 +167,23 @@ export function ReportesClient({
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Empleado</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Sucursal</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Sueldo</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">$/h extra</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Días</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Tardanzas</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Inasistencias</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Hs Extra</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Monto Extra</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium">Presentismo</th>
-                <th className="text-right px-6 py-3 text-gray-500 font-medium font-bold">Total</th>
+                <th className="text-left px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Empleado</th>
+                <th className="text-left px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Sucursal</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Sueldo</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">$/h extra</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Días</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Tardanzas</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Inasistencias</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Hs Extra</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Monto Extra</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-semibold whitespace-nowrap">Presentismo</th>
+                <th className="text-right px-3 py-3 text-gray-500 font-bold whitespace-nowrap">Total</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {resúmenes.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-6 py-10 text-center text-gray-400">
+                  <td colSpan={11} className="px-3 py-10 text-center text-gray-400">
                     Sin datos para este período
                   </td>
                 </tr>
@@ -175,27 +194,27 @@ export function ReportesClient({
                 return (
                 <tr key={empleado.id} className="hover:bg-gray-50">
                   <td
-                    className="px-6 py-4 font-medium text-blue-700 cursor-pointer hover:underline"
+                    className="px-3 py-4 font-medium text-blue-700 cursor-pointer hover:underline whitespace-nowrap"
                     onClick={() => setSelectedEmpleadoId(empleado.id)}
                   >
                     {empleado.apellido}, {empleado.nombre}
                   </td>
-                  <td className="px-6 py-4 text-gray-600">
+                  <td className="px-3 py-4 text-gray-600 whitespace-nowrap">
                     {empleado.sucursales?.nombre ?? '—'}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-700">
+                  <td className="px-3 py-4 text-right text-gray-700 whitespace-nowrap">
                     {sueldo > 0 ? fmt(sueldo) : <span className="text-gray-400 text-xs">—</span>}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-500 text-xs">
+                  <td className="px-3 py-4 text-right text-gray-500 text-xs whitespace-nowrap">
                     {valorHora ? fmt(valorHora) : '—'}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-700">{resumen.diasTrabajados}</td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-3 py-4 text-right text-gray-700 whitespace-nowrap">{resumen.diasTrabajados}</td>
+                  <td className="px-3 py-4 text-right whitespace-nowrap">
                     <span className={resumen.tardanzas >= 3 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
                       {resumen.tardanzas}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-3 py-4 text-right whitespace-nowrap">
                     <span className={resumen.inasistencias - resumen.inasistenciasJustificadas >= 1 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
                       {resumen.inasistencias}
                     </span>
@@ -203,14 +222,14 @@ export function ReportesClient({
                       <span className="block text-xs text-green-600">{resumen.inasistenciasJustificadas} justif.</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-700">{resumen.horasExtraFormato}</td>
-                  <td className="px-6 py-4 text-right text-gray-700">{fmt(resumen.montoExtra)}</td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-3 py-4 text-right text-gray-700 whitespace-nowrap">{resumen.horasExtraFormato}</td>
+                  <td className="px-3 py-4 text-right text-gray-700 whitespace-nowrap">{fmt(resumen.montoExtra)}</td>
+                  <td className="px-3 py-4 text-right whitespace-nowrap">
                     <span className={resumen.presentismo === 0 ? 'text-red-600' : 'text-gray-700'}>
                       {fmt(resumen.presentismo)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right font-bold text-gray-900">
+                  <td className="px-3 py-4 text-right font-bold text-gray-900 whitespace-nowrap">
                     {fmt(resumen.totalLiquidar)}
                   </td>
                 </tr>

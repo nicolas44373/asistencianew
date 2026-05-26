@@ -37,7 +37,7 @@ export function calcularMes(
   const montoExtra = parseFloat((horasExtra * valorHora).toFixed(2))
 
   const inasistenciasInjustificadas = inasistencias - inasistenciasJustificadas
-  const pierdePresntismo = tardanzas >= 3 || inasistenciasInjustificadas >= 1 || fechasInjustificadasExplicitas.size > 0
+  const pierdePresntismo = tardanzas >= 3 || inasistenciasInjustificadas > 0 || fechasInjustificadasExplicitas.size > 0
   const presentismo      = pierdePresntismo ? 0 : montoPresentismo
   const totalLiquidar    = parseFloat((montoExtra + presentismo).toFixed(2))
 
