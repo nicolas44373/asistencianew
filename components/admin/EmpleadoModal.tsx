@@ -5,7 +5,9 @@ import { addMonths, subMonths } from 'date-fns'
 import { createClient } from '@/lib/supabase/client'
 import { formatHora, formatFecha, formatMinutos, nombreMes } from '@/lib/utils/tiempo'
 import { calcularMes } from '@/lib/reglas/calcularMes'
+import { redondearAlMultiploDe100 } from '@/lib/reglas/redondearMonto'
 import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
+import { construirResolverHorarios, type PeriodoSucursal } from '@/lib/reglas/resolverHorariosPorFecha'
 import { agruparPorDia, calcularDiaLibre, calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
 import { format } from 'date-fns-tz'
 import type { RegistroAsistencia, HorarioSucursal, HorarioEmpleado, Empleado, Justificacion, Turno } from '@/lib/types/database'
@@ -17,7 +19,9 @@ type EmpleadoFull = Empleado & { sucursales: { nombre: string } | null }
 
 interface EstaticosData {
   empleado: EmpleadoFull
-  horarios: HorarioSucursal[]
+  historial: PeriodoSucursal[]
+  horariosPorSucursal: Map<string, HorarioSucursal[]>
+  esJuanBJustoPorSucursal: Map<string, boolean>
   horariosPersonales: HorarioEmpleado[]
   montoPresentismo: number
 }
@@ -50,8 +54,31 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
 
     if (!empleado) { setLoadingEstaticos(false); return }
 
-    const [{ data: horarios }, { data: horariosPersonales }, { data: config }] = await Promise.all([
-      supabase.from('horarios_sucursal').select('*').eq('sucursal_id', empleado.sucursal_id ?? ''),
+    // Historial de sucursal: resuelve el horario vigente por fecha en vez de asumir la
+    // sucursal actual del empleado para todo el mes (evita inasistencias falsas tras un traslado).
+    const { data: historialRaw } = await supabase
+      .from('empleado_sucursal_historial')
+      .select('sucursal_id, fecha_desde, fecha_hasta')
+      .eq('empleado_id', empleadoId)
+      .order('fecha_desde', { ascending: true })
+
+    const historial: PeriodoSucursal[] = (historialRaw ?? []).map(h => ({
+      sucursalId: h.sucursal_id, fechaDesde: h.fecha_desde, fechaHasta: h.fecha_hasta,
+    }))
+
+    // Sucursales relevantes: todas las del historial + la actual (fallback si no hay historial)
+    const sucursalIds = Array.from(new Set([
+      ...historial.map(h => h.sucursalId),
+      ...(empleado.sucursal_id ? [empleado.sucursal_id] : []),
+    ]))
+
+    const [{ data: horariosRaw }, { data: sucursalesRaw }, { data: horariosPersonales }, { data: config }] = await Promise.all([
+      sucursalIds.length > 0
+        ? supabase.from('horarios_sucursal').select('*').in('sucursal_id', sucursalIds)
+        : Promise.resolve({ data: [] as HorarioSucursal[] }),
+      sucursalIds.length > 0
+        ? supabase.from('sucursales').select('id, nombre').in('id', sucursalIds)
+        : Promise.resolve({ data: [] as { id: string; nombre: string }[] }),
       supabase.from('horarios_empleado').select('*').eq('empleado_id', empleadoId),
       supabase.from('config_liquidacion')
         .select('monto_presentismo')
@@ -59,9 +86,21 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         .limit(1).single(),
     ])
 
+    const horariosPorSucursal = new Map<string, HorarioSucursal[]>()
+    for (const h of (horariosRaw ?? []) as HorarioSucursal[]) {
+      if (!horariosPorSucursal.has(h.sucursal_id)) horariosPorSucursal.set(h.sucursal_id, [])
+      horariosPorSucursal.get(h.sucursal_id)!.push(h)
+    }
+    const esJuanBJustoPorSucursal = new Map<string, boolean>()
+    for (const s of sucursalesRaw ?? []) {
+      esJuanBJustoPorSucursal.set(s.id, s.nombre.toLowerCase().includes('juan b'))
+    }
+
     setEstaticos({
       empleado: empleado as EmpleadoFull,
-      horarios: (horarios ?? []) as HorarioSucursal[],
+      historial,
+      horariosPorSucursal,
+      esJuanBJustoPorSucursal,
       horariosPersonales: (horariosPersonales ?? []) as HorarioEmpleado[],
       montoPresentismo: config ? Number(config.monto_presentismo) : 0,
     })
@@ -109,17 +148,28 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
   const esLibre = estaticos?.empleado.rol === 'administracion'
 
   // ── Cálculos memoizados ───────────────────────────────────────
-  const horariosEfectivos = useMemo(() => {
-    if (!estaticos) return []
-    const rawHorarios = estaticos.horariosPersonales.length > 0
-      ? estaticos.horariosPersonales
-      : estaticos.horarios
+  // Resuelve el horario vigente por fecha usando el historial de sucursal del empleado,
+  // en vez de asumir su sucursal actual para todo el mes (evita inasistencias falsas tras un traslado).
+  const resolverHorarioDia = useMemo(() => {
+    if (!estaticos) return () => []
+    return construirResolverHorarios({
+      historial: estaticos.historial,
+      horariosPersonales: estaticos.horariosPersonales,
+      horariosPorSucursal: estaticos.horariosPorSucursal,
+      esJuanBJustoPorSucursal: estaticos.esJuanBJustoPorSucursal,
+      sucursalIdFallback: estaticos.empleado.sucursal_id,
+    })
+  }, [estaticos])
 
-    const esJuanBJusto = estaticos.empleado.sucursales?.nombre.toLowerCase().includes('juan b')
-    if (esJuanBJusto) {
-      return rawHorarios.filter(h => h.turno !== 'unico')
-    }
-    return rawHorarios
+  // Sucursal vigente en una fecha puntual (según el historial), para saber si ese día
+  // corresponde a una sucursal sin turno único (ej. Juan B. Justo) al armar la lista de días.
+  const esJuanBJustoEnFecha = useCallback((fecha: string): boolean => {
+    if (!estaticos) return false
+    const periodo = estaticos.historial.find(
+      p => p.fechaDesde <= fecha && (p.fechaHasta === null || fecha <= p.fechaHasta)
+    )
+    const sucursalId = periodo?.sucursalId ?? estaticos.empleado.sucursal_id ?? null
+    return sucursalId ? (estaticos.esJuanBJustoPorSucursal.get(sucursalId) ?? false) : false
   }, [estaticos])
 
   const fechaIngreso = useMemo(() =>
@@ -165,17 +215,17 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
 
   const inasistencias = useMemo(() =>
     !esLibre && estaticos
-      ? calcularInasistencias(registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada)
+      ? calcularInasistencias(registros, resolverHorarioDia, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada)
       : 0,
-  [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada])
+  [esLibre, estaticos, registros, resolverHorarioDia, mes, fechaIngreso, fechasInjustificadasExplicitas, fechasFeriadoOMediaJornada])
 
   const inasistenciasJustificadas = useMemo(() => {
     if (!estaticos) return 0
     if (esLibre) {
       return calcularInasistenciasJustificadasLibre(registros, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
     }
-    return calcularInasistenciasJustificadas(registros, horariosEfectivos, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
-  }, [esLibre, estaticos, registros, horariosEfectivos, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada])
+    return calcularInasistenciasJustificadas(registros, resolverHorarioDia, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada)
+  }, [esLibre, estaticos, registros, resolverHorarioDia, mes, fechasJust, fechaIngreso, fechasFeriadoOMediaJornada])
 
 
 
@@ -200,9 +250,6 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       ? (fechaIngreso > `${mes}-01` ? fechaIngreso : `${mes}-01`)
       : `${mes}-01`
 
-    const tieneHorarioSemana = horariosEfectivos.some(h => !h.es_sabado)
-    const tieneHorarioSabado = horariosEfectivos.some(h => h.es_sabado)
-
     const ultimoDiaEnMes = new Date(year, month, 0).getDate()
 
     for (let dia = ultimoDiaEnMes; dia >= 1; dia--) {
@@ -213,6 +260,11 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       if (fechaStr < primerDiaStr) continue
       if (fechaStr > hoyStr) continue
 
+      // Horario vigente para esta fecha puntual (según el historial de sucursal)
+      const horariosDia = resolverHorarioDia(fechaStr)
+      const tieneHorarioSemana = horariosDia.some(h => !h.es_sabado)
+      const tieneHorarioSabado = horariosDia.some(h => h.es_sabado)
+
       const diaSemana = new Date(year, month - 1, dia).getDay()
       const esSabado = diaSemana === 6
       const esDiaLaboral =
@@ -220,15 +272,15 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         (esSabado && tieneHorarioSabado)
 
       const turnosEsperados = esDiaLaboral
-        ? horariosEfectivos.filter(h => h.es_sabado === esSabado).map(h => h.turno)
+        ? horariosDia.filter(h => h.es_sabado === esSabado).map(h => h.turno)
         : []
 
       const regsDia = registros.filter(r => r.fecha === fechaStr)
-      const esJuanBJusto = estaticos.empleado.sucursales?.nombre.toLowerCase().includes('juan b')
-      const turnosAMostrar = Array.from(new Set([
+      const esJuanBJusto = esJuanBJustoEnFecha(fechaStr)
+      const turnosAMostrar = (Array.from(new Set([
         ...turnosEsperados,
         ...regsDia.map(r => r.turno).filter((t): t is Turno => t !== null)
-      ])).filter(t => !(esJuanBJusto && t === 'unico'))
+      ])) as Turno[]).filter(t => !(esJuanBJusto && t === 'unico'))
 
       const just = justificaciones.find(j => j.fecha === fechaStr)
 
@@ -281,7 +333,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
     }
 
     return items
-  }, [esLibre, estaticos, registros, horariosEfectivos, mes, fechaIngreso, justificaciones])
+  }, [esLibre, estaticos, registros, resolverHorarioDia, esJuanBJustoEnFecha, mes, fechaIngreso, justificaciones])
 
   const diasPorFecha = useMemo(() => {
     if (!esLibre || !estaticos) return []
@@ -386,7 +438,8 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
       const inasJust = inasistenciasJustificadas
       const pierdePres = (inas - inasJust) > 0 || fechasInjustificadasExplicitas.size > 0
       const presentismo = pierdePres ? 0 : estaticos.montoPresentismo
-      const totalLiquidar = parseFloat((montoExtra + presentismo).toFixed(2))
+      const totalLiquidarExacto = parseFloat((montoExtra + presentismo).toFixed(2))
+      const totalLiquidar = redondearAlMultiploDe100(totalLiquidarExacto)
 
       return {
         diasTrabajados: statsLibre.diasTrabajados,
@@ -397,7 +450,8 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         horasExtraFormato: formatMinutos(minutosExtra),
         montoExtra,
         presentismo,
-        totalLiquidar
+        totalLiquidar,
+        totalLiquidarExacto,
       }
     }
 
@@ -423,27 +477,27 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
         onClick={e => e.stopPropagation()}
       >
         {/* Encabezado */}
-        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-100 shrink-0">
+        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-slate-100 shrink-0">
           {loadingEstaticos || !estaticos ? (
             <div className="space-y-1.5">
-              <div className="h-6 w-44 bg-gray-100 rounded animate-pulse" />
-              <div className="h-4 w-60 bg-gray-100 rounded animate-pulse" />
+              <div className="h-6 w-44 bg-slate-100 rounded animate-pulse" />
+              <div className="h-4 w-60 bg-slate-100 rounded animate-pulse" />
             </div>
           ) : (
             <div>
-              <h2 className="text-xl font-bold text-gray-900">
+              <h2 className="text-xl font-bold text-slate-900">
                 {estaticos.empleado.nombre} {estaticos.empleado.apellido}
               </h2>
-              <p className="text-sm text-gray-500 mt-0.5">
+              <p className="text-sm text-slate-500 mt-0.5">
                 <span className="capitalize">{estaticos.empleado.rol}</span>
                 {estaticos.empleado.sucursales && ` · ${estaticos.empleado.sucursales.nombre}`}
                 {estaticos.empleado.dni && ` · DNI ${estaticos.empleado.dni}`}
               </p>
               {estaticos.empleado.sueldo != null && (
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-slate-500">
                   Sueldo: {fmt(estaticos.empleado.sueldo)}
                   {' · '}
-                  <span className={estaticos.empleado.activo ? 'text-green-600' : 'text-gray-400'}>
+                  <span className={estaticos.empleado.activo ? 'text-green-600' : 'text-slate-400'}>
                     {estaticos.empleado.activo ? 'Activo' : 'Inactivo'}
                   </span>
                 </p>
@@ -452,7 +506,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
           )}
           <button
             onClick={onClose}
-            className="ml-4 shrink-0 text-gray-400 hover:text-gray-700 transition-colors"
+            className="ml-4 shrink-0 text-slate-400 hover:text-slate-700 transition-colors"
             aria-label="Cerrar"
           >
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -472,7 +526,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
             >
               ← Anterior
             </button>
-            <span className="font-semibold text-gray-700 capitalize min-w-[140px] text-center">
+            <span className="font-semibold text-slate-700 capitalize min-w-[140px] text-center">
               {nombreMes(mesDate)}
             </span>
             <button
@@ -486,11 +540,11 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
           {loadingEstaticos ? (
             <div className="space-y-3">
               {[1, 2, 3, 4].map(i => (
-                <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />
+                <div key={i} className="h-12 bg-slate-100 rounded-xl animate-pulse" />
               ))}
             </div>
           ) : !estaticos ? (
-            <p className="text-center text-gray-400 py-10">No se pudo cargar la información</p>
+            <p className="text-center text-slate-400 py-10">No se pudo cargar la información</p>
           ) : esLibre ? (
             // ── Vista libre (administracion, lunes-sábado) ──────────
             <>
@@ -502,50 +556,54 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
               </div>
 
               {resumen && (
-                <div className="bg-gray-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                  <span className="text-gray-500">
+                <div className="bg-slate-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                  <span className="text-slate-500">
                     Inasistencias:{' '}
-                    <span className={resumen.inasistencias > 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
+                    <span className={resumen.inasistencias > 0 ? 'text-red-600 font-semibold' : 'text-slate-800 font-semibold'}>
                       {resumen.inasistencias}
                     </span>
                     {resumen.inasistenciasJustificadas > 0 && (
                       <span className="text-green-600 text-xs ml-1">({resumen.inasistenciasJustificadas} justif.)</span>
                     )}
                   </span>
-                  <span className="text-gray-500">
+                  <span className="text-slate-500">
                     Presentismo:{' '}
-                    <span className={resumen.presentismo === 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
+                    <span className={resumen.presentismo === 0 ? 'text-red-600 font-semibold' : 'text-slate-800 font-semibold'}>
                       {fmt(resumen.presentismo)}
                     </span>
                   </span>
-                  <span className="text-gray-500">
-                    Extras: <span className="text-gray-800 font-semibold">{fmt(resumen.montoExtra)}</span>
+                  <span className="text-slate-500">
+                    Extras: <span className="text-slate-800 font-semibold">{fmt(resumen.montoExtra)}</span>
                   </span>
-                  <span className="ml-auto text-gray-500">
-                    Total: <span className="text-gray-900 font-bold text-base">{fmt(resumen.totalLiquidar)}</span>
+                  <span className="ml-auto text-right">
+                    <span className="text-slate-500">Total: </span>
+                    <span className="text-slate-900 font-bold text-base">{fmt(resumen.totalLiquidar)}</span>
+                    {resumen.totalLiquidarExacto !== resumen.totalLiquidar && (
+                      <span className="block text-xs text-slate-400">exacto: {fmt(resumen.totalLiquidarExacto)}</span>
+                    )}
                   </span>
                 </div>
               )}
 
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                 Registros del mes
               </h3>
 
               {loadingRegistros ? (
                 <div className="space-y-2">
-                  {[1, 2, 3].map(i => <div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse" />)}
+                  {[1, 2, 3].map(i => <div key={i} className="h-16 bg-slate-100 rounded-xl animate-pulse" />)}
                 </div>
               ) : diasPorFecha.length === 0 ? (
-                <p className="text-gray-400 text-sm text-center py-8">Sin registros en este período</p>
+                <p className="text-slate-400 text-sm text-center py-8">Sin registros en este período</p>
               ) : (
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-slate-100">
                   {diasPorFecha.map(dia => {
                     const [y, m, d] = dia.fecha.split('-').map(Number)
                     const isSab = new Date(y, m - 1, d).getDay() === 6
                     return (
                       <div key={dia.fecha} className="py-3">
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-xs font-semibold text-gray-500">
+                          <span className="text-xs font-semibold text-slate-500">
                             {formatFecha(dia.fecha + 'T12:00:00')}
                           </span>
                           <div className="flex items-center gap-2">
@@ -589,19 +647,19 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                         {dia.registros.length > 0 ? (
                           <div className="space-y-1 pl-1">
                             {dia.registros.map((r, i) => (
-                              <div key={r.id} className="flex items-center gap-2 text-sm text-gray-700">
-                                <span className="text-xs text-gray-400 w-14 shrink-0">Bloque {i + 1}</span>
+                              <div key={r.id} className="flex items-center gap-2 text-sm text-slate-700">
+                                <span className="text-xs text-slate-400 w-14 shrink-0">Bloque {i + 1}</span>
                                 <span className="font-mono">
                                   {r.hora_entrada ? formatHora(r.hora_entrada) : '—'}
-                                  <span className="text-gray-300 mx-1">→</span>
-                                  {r.hora_salida ? formatHora(r.hora_salida) : <span className="text-gray-300">—</span>}
+                                  <span className="text-slate-300 mx-1">→</span>
+                                  {r.hora_salida ? formatHora(r.hora_salida) : <span className="text-slate-300">—</span>}
                                 </span>
                               </div>
                             ))}
                           </div>
                         ) : (
                           dia.tieneJustificacion && (
-                            <p className="text-xs text-gray-500 pl-1 italic">
+                            <p className="text-xs text-slate-500 pl-1 italic">
                               Motivo: {
                                 (() => {
                                   const just = justificaciones.find(j => j.fecha === dia.fecha)
@@ -636,47 +694,51 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                     <StatCard label="Hs extra" value={resumen.horasExtraFormato} />
                   </div>
 
-                  <div className="bg-gray-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                    <span className="text-gray-500">
+                  <div className="bg-slate-50 rounded-xl px-4 py-3 mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                    <span className="text-slate-500">
                       Presentismo:{' '}
-                      <span className={resumen.presentismo === 0 ? 'text-red-600 font-semibold' : 'text-gray-800 font-semibold'}>
+                      <span className={resumen.presentismo === 0 ? 'text-red-600 font-semibold' : 'text-slate-800 font-semibold'}>
                         {fmt(resumen.presentismo)}
                       </span>
                     </span>
-                    <span className="text-gray-500">
-                      Extras: <span className="text-gray-800 font-semibold">{fmt(resumen.montoExtra)}</span>
+                    <span className="text-slate-500">
+                      Extras: <span className="text-slate-800 font-semibold">{fmt(resumen.montoExtra)}</span>
                     </span>
-                    <span className="ml-auto text-gray-500">
-                      Total: <span className="text-gray-900 font-bold text-base">{fmt(resumen.totalLiquidar)}</span>
+                    <span className="ml-auto text-right">
+                      <span className="text-slate-500">Total: </span>
+                      <span className="text-slate-900 font-bold text-base">{fmt(resumen.totalLiquidar)}</span>
+                      {resumen.totalLiquidarExacto !== resumen.totalLiquidar && (
+                        <span className="block text-xs text-slate-400">exacto: {fmt(resumen.totalLiquidarExacto)}</span>
+                      )}
                     </span>
                   </div>
                 </>
               )}
 
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                 Registros del mes
               </h3>
 
               {loadingRegistros ? (
                 <div className="space-y-2">
-                  {[1, 2, 3].map(i => <div key={i} className="h-10 bg-gray-100 rounded-xl animate-pulse" />)}
+                  {[1, 2, 3].map(i => <div key={i} className="h-10 bg-slate-100 rounded-xl animate-pulse" />)}
                 </div>
               ) : registrosYInasistencias.length === 0 ? (
-                <p className="text-gray-400 text-sm text-center py-8">Sin registros ni inasistencias en este período</p>
+                <p className="text-slate-400 text-sm text-center py-8">Sin registros ni inasistencias en este período</p>
               ) : (
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-slate-100">
                   {registrosYInasistencias.map(item => (
                     <div key={item.id} className="flex items-center gap-3 py-2.5">
-                      <span className="text-xs text-gray-400 w-16 shrink-0 font-medium">
+                      <span className="text-xs text-slate-400 w-16 shrink-0 font-medium">
                         {formatFecha(item.fecha + 'T12:00:00')}
                       </span>
-                      <span className="text-xs text-gray-400 w-12 shrink-0 capitalize">
+                      <span className="text-xs text-slate-400 w-12 shrink-0 capitalize">
                         {item.turno ?? '—'}
                       </span>
-                      <span className="font-mono text-sm text-gray-700">
+                      <span className="font-mono text-sm text-slate-700">
                         {item.hora_entrada ? formatHora(item.hora_entrada) : '—'}
-                        <span className="text-gray-300 mx-1">→</span>
-                        {item.hora_salida ? formatHora(item.hora_salida) : <span className="text-gray-300">—</span>}
+                        <span className="text-slate-300 mx-1">→</span>
+                        {item.hora_salida ? formatHora(item.hora_salida) : <span className="text-slate-300">—</span>}
                       </span>
                       <div className="ml-auto flex gap-1 flex-wrap justify-end">
                         {item.estado === 'tardanza' && <Chip text="Tardanza" color="red" />}
@@ -707,9 +769,9 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
 
 function StatCard({ label, value, danger, sub }: { label: string; value: string | number; danger?: boolean; sub?: string }) {
   return (
-    <div className="bg-gray-50 rounded-xl p-3 text-center">
-      <p className="text-xs text-gray-400 uppercase tracking-wide">{label}</p>
-      <p className={`text-2xl font-bold mt-0.5 ${danger ? 'text-red-600' : 'text-gray-800'}`}>{value}</p>
+    <div className="bg-slate-50 rounded-xl p-3 text-center">
+      <p className="text-xs text-slate-400 uppercase tracking-wide">{label}</p>
+      <p className={`text-2xl font-bold mt-0.5 ${danger ? 'text-red-600' : 'text-slate-800'}`}>{value}</p>
       {sub && <p className="text-xs text-green-600 mt-0.5">{sub}</p>}
     </div>
   )

@@ -15,6 +15,7 @@ function mockRegistro(overrides: Partial<RegistroAsistencia>): RegistroAsistenci
     minutos_extra: 0,
     editado_por: null,
     motivo_edicion: null,
+    salida_autocompletada: false,
     created_at: '2024-01-15T08:00:00Z',
     ...overrides,
   }

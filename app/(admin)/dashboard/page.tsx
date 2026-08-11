@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
 import { DashboardClient } from './DashboardClient'
+import { PageHeader } from '@/components/admin/PageHeader'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -27,7 +28,7 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Dashboard — {hoy}</h1>
+      <PageHeader eyebrow="Panel de administración" title="Dashboard" subtitle={`Estado en tiempo real — ${hoy}`} />
       <DashboardClient
         empleados={(empleados ?? []) as unknown as Parameters<typeof DashboardClient>[0]['empleados']}
         registros={registros ?? []}

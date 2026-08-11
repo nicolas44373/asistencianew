@@ -67,3 +67,49 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     )
   }
 }
+
+export async function DELETE(_request: NextRequest, { params }: Params) {
+  try {
+    const supabase = createClient()
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+
+    const { data: adminRow } = await supabase
+      .from('empleados').select('rol').eq('id', user.id).single()
+    if (adminRow?.rol !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    if (user.id === params.id) {
+      return NextResponse.json({ error: 'No podés eliminar tu propio usuario' }, { status: 400 })
+    }
+
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json(
+        { error: 'Falta SUPABASE_SERVICE_ROLE_KEY en las variables de entorno' },
+        { status: 500 }
+      )
+    }
+
+    const adminClient = createAdminClient()
+
+    await adminClient.from('justificaciones').delete().eq('empleado_id', params.id)
+    await adminClient.from('horarios_empleado').delete().eq('empleado_id', params.id)
+
+    const { error: empErr } = await adminClient
+      .from('empleados')
+      .delete()
+      .eq('id', params.id)
+
+    if (empErr) return NextResponse.json({ error: empErr.message }, { status: 500 })
+
+    const { error: authErr } = await adminClient.auth.admin.deleteUser(params.id)
+    if (authErr) return NextResponse.json({ error: authErr.message }, { status: 500 })
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Error interno' },
+      { status: 500 }
+    )
+  }
+}

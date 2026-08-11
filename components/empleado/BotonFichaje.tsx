@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import type { RegistroAsistencia } from '@/lib/types/database'
 import { formatHora } from '@/lib/utils/tiempo'
 
@@ -46,10 +46,16 @@ export function BotonFichaje({ registros, onFichaje }: Props) {
   const [ubicando, setUbicando] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError]       = useState<string | null>(null)
+  // Guardia síncrona anti doble-toque: no depende del repintado de React (a diferencia
+  // de `loading`), así que bloquea reentradas incluso si dos toques llegan en el mismo tick.
+  const fichandoRef = useRef(false)
 
   const estado = getEstado(registros)
 
   async function fichar() {
+    if (fichandoRef.current) return
+    fichandoRef.current = true
+
     setLoading(true)
     setFeedback(null)
     setError(null)
@@ -75,6 +81,7 @@ export function BotonFichaje({ registros, onFichaje }: Props) {
       setError(msg)
       setUbicando(false)
       setLoading(false)
+      fichandoRef.current = false
       return
     } finally {
       setUbicando(false)
@@ -103,13 +110,17 @@ export function BotonFichaje({ registros, onFichaje }: Props) {
       } else if (tipo === 'salida') {
         setFeedback(`Salida registrada a las ${formatHora(registro.hora_salida!)}`)
         onFichaje(registros.map(r => r.id === registro.id ? registro : r))
+      } else if (tipo === 'duplicado') {
+        // Doble toque detectado por el servidor: no se modificó nada, se ignora en silencio.
+        setFeedback('Ya se registró tu marca hace instantes.')
       } else {
         setFeedback('Jornada ya completada')
       }
     } catch {
-      setError('Error de conexión. Verificá tu señal.')
+      setError('Error de conexión. Verificá tu señal. Si el problema persiste, volvé a intentar.')
     } finally {
       setLoading(false)
+      fichandoRef.current = false
     }
   }
 

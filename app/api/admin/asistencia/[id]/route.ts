@@ -60,6 +60,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         editado_por:       user.id,
         motivo_edicion,
         turno,
+        salida_autocompletada: false,
       })
       .eq('id', params.id)
 
@@ -105,6 +106,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       editado_por:       user.id,
       motivo_edicion,
       turno,
+      salida_autocompletada: false,
     })
     .eq('id', params.id)
 

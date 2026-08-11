@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import type { RegistroAsistencia, Sucursal, HorarioSucursal, Justificacion, HorarioEmpleado, Turno } from '@/lib/types/database'
-import { formatHora, formatMinutos } from '@/lib/utils/tiempo'
+import { formatHora, formatMinutos, fechaHoyLocal } from '@/lib/utils/tiempo'
 import { EmpleadoModal } from '@/components/admin/EmpleadoModal'
 import { parseJustificacionMotivo, serializeJustificacionMotivo, TipoJustificacion } from '@/lib/utils/justificaciones'
 
@@ -23,7 +23,8 @@ interface Props {
   horariosPersonales: HorarioEmpleado[]
   justificaciones: Justificacion[]
   fechaInicial: string
-  filtros: { sucursal_id?: string; empleado_id?: string }
+  filtros: { sucursal_id?: string; empleado_id?: string; desde?: string; hasta?: string }
+  rangoActivo: boolean
 }
 
 interface JustificandoState {
@@ -54,6 +55,20 @@ interface RegistrandoState {
   turno?: string
 }
 
+interface TurnoUnifForm {
+  registroId?: string
+  hora_entrada: string
+  hora_salida: string
+}
+
+interface RegistrarUnifState {
+  empleado_id: string
+  nombre: string
+  fecha: string
+  manana: TurnoUnifForm
+  tarde: TurnoUnifForm
+}
+
 function horaActualLocal(): string {
   return new Date().toLocaleTimeString('es-AR', {
     timeZone: 'America/Argentina/Buenos_Aires',
@@ -61,11 +76,15 @@ function horaActualLocal(): string {
   })
 }
 
-export function AsistenciaClient({ registros, sucursales, empleados, horarios, horariosPersonales, justificaciones, fechaInicial, filtros }: Props) {
+export function AsistenciaClient({ registros, sucursales, empleados, horarios, horariosPersonales, justificaciones, fechaInicial, filtros, rangoActivo }: Props) {
   const router = useRouter()
+  const [isPending, startTransition] = useTransition()
   const [fecha, setFecha]         = useState(fechaInicial)
   const [sucursalId, setSucursal] = useState(filtros.sucursal_id ?? '')
   const [empleadoId, setEmpleado] = useState(filtros.empleado_id ?? '')
+  const [desde, setDesde]         = useState(filtros.desde ?? '')
+  const [hasta, setHasta]         = useState(filtros.hasta ?? '')
+  const [filtroError, setFiltroError] = useState<string | null>(null)
   const [editando, setEditando]   = useState<RegistroConEmp | null>(null)
   const [editForm, setEditForm]   = useState<EditForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '', turno: 'mañana' })
   const [loading, setLoading]     = useState(false)
@@ -98,6 +117,12 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
   const [regForm, setRegForm]         = useState<RegistroNuevoForm>({ hora_entrada: '', hora_salida: '', motivo_edicion: '', turno: 'mañana' })
   const [regLoading, setRegLoading]   = useState(false)
   const [regError, setRegError]       = useState<string | null>(null)
+
+  // Estado para registro manual unificado (mañana + tarde en una sola operación)
+  const [registrandoUnif, setRegistrandoUnif] = useState<RegistrarUnifState | null>(null)
+  const [unifMotivo, setUnifMotivo]           = useState('')
+  const [unifLoading, setUnifLoading]         = useState(false)
+  const [unifError, setUnifError]             = useState<string | null>(null)
 
   // Turnos disponibles para el empleado seleccionado
   const turnosDisponibles = useMemo(() => {
@@ -138,8 +163,9 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
     }
   }, [editando, turnosDisponibles, editForm.turno])
 
-  // Precalcula y unifica filas para cada turno esperado de los empleados
+  // Precalcula y unifica filas para cada turno esperado de los empleados (solo modo día)
   const rowsToRender = useMemo(() => {
+    if (rangoActivo) return []
     const rows: Array<{
       emp: typeof empleados[0]
       sucursalNombre: string
@@ -148,6 +174,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
       just: Justificacion | null
       isFirstOfEmployee: boolean
       rowSpan: number
+      turnosAMostrar: Turno[]
     }> = []
 
     const [y, m, d]  = fechaInicial.split('-').map(Number)
@@ -188,19 +215,52 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
           registro,
           just,
           isFirstOfEmployee: index === 0,
-          rowSpan: turnosAMostrar.length
+          rowSpan: turnosAMostrar.length,
+          turnosAMostrar,
         })
       })
     }
 
     return rows
-  }, [fechaInicial, sucursalId, empleadoId, registros, empleados, horarios, horariosPersonales, sucursales, justMap])
+  }, [rangoActivo, fechaInicial, sucursalId, empleadoId, registros, empleados, horarios, horariosPersonales, sucursales, justMap])
 
   function aplicarFiltros() {
+    setFiltroError(null)
+
+    const rangoParcial = (desde && !hasta) || (!desde && hasta)
+    if (rangoParcial) {
+      setFiltroError('Completá ambas fechas ("Desde" y "Hasta") para filtrar por rango')
+      return
+    }
+
+    if (desde && hasta) {
+      if (desde > hasta) {
+        setFiltroError('La fecha "Desde" no puede ser posterior a "Hasta"')
+        return
+      }
+      if (!empleadoId) {
+        setFiltroError('Elegí un empleado para filtrar por rango de fechas')
+        return
+      }
+      const params = new URLSearchParams({ desde, hasta, empleado_id: empleadoId })
+      startTransition(() => router.push(`/asistencia?${params}`))
+      return
+    }
+
     const params = new URLSearchParams({ fecha })
     if (sucursalId) params.set('sucursal_id', sucursalId)
     if (empleadoId) params.set('empleado_id', empleadoId)
-    router.push(`/asistencia?${params}`)
+    startTransition(() => router.push(`/asistencia?${params}`))
+  }
+
+  function limpiarFiltros() {
+    setDesde('')
+    setHasta('')
+    setSucursal('')
+    setEmpleado('')
+    setFiltroError(null)
+    setFecha(fechaHoyLocal())
+    startTransition(() => router.push('/asistencia'))
   }
 
   function abrirEdicion(r: RegistroConEmp) {
@@ -394,79 +454,278 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
     }
   }
 
+  function abrirRegistroUnificado(emp: { id: string; nombre: string; apellido: string }) {
+    const regsEmp = registros.filter(r => r.empleado_id === emp.id)
+    const mananaReg = regsEmp.find(r => r.turno === 'mañana') ?? null
+    const tardeReg  = regsEmp.find(r => r.turno === 'tarde')  ?? null
+
+    setRegistrandoUnif({
+      empleado_id: emp.id,
+      nombre: `${emp.apellido}, ${emp.nombre}`,
+      fecha,
+      manana: {
+        registroId:   mananaReg?.id,
+        hora_entrada: mananaReg?.hora_entrada ? formatHoraInput(mananaReg.hora_entrada) : '',
+        hora_salida:  mananaReg?.hora_salida  ? formatHoraInput(mananaReg.hora_salida)  : '',
+      },
+      tarde: {
+        registroId:   tardeReg?.id,
+        hora_entrada: tardeReg?.hora_entrada ? formatHoraInput(tardeReg.hora_entrada) : '',
+        hora_salida:  tardeReg?.hora_salida  ? formatHoraInput(tardeReg.hora_salida)  : '',
+      },
+    })
+    setUnifMotivo('')
+    setUnifError(null)
+  }
+
+  async function guardarRegistroUnificado(e: React.FormEvent) {
+    e.preventDefault()
+    if (!registrandoUnif) return
+
+    const { manana, tarde } = registrandoUnif
+    const tareas: Array<{ turno: 'mañana' | 'tarde'; data: TurnoUnifForm }> = []
+
+    if (manana.hora_salida.trim() && !manana.hora_entrada.trim()) {
+      setUnifError('Turno mañana: si cargás la hora de salida, la hora de entrada es obligatoria')
+      return
+    }
+    if (tarde.hora_salida.trim() && !tarde.hora_entrada.trim()) {
+      setUnifError('Turno tarde: si cargás la hora de salida, la hora de entrada es obligatoria')
+      return
+    }
+    if (manana.hora_entrada.trim()) tareas.push({ turno: 'mañana', data: manana })
+    if (tarde.hora_entrada.trim())  tareas.push({ turno: 'tarde',  data: tarde })
+
+    if (tareas.length === 0) {
+      setUnifError('Completá al menos un turno (mañana o tarde)')
+      return
+    }
+    if (!unifMotivo.trim()) {
+      setUnifError('El motivo es obligatorio')
+      return
+    }
+
+    setUnifLoading(true)
+    setUnifError(null)
+
+    try {
+      for (const t of tareas) {
+        const url    = t.data.registroId ? `/api/admin/asistencia/${t.data.registroId}` : '/api/admin/asistencia'
+        const method = t.data.registroId ? 'PATCH' : 'POST'
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            empleado_id:    registrandoUnif.empleado_id,
+            fecha:          registrandoUnif.fecha,
+            hora_entrada:   t.data.hora_entrada,
+            hora_salida:    t.data.hora_salida || null,
+            motivo_edicion: unifMotivo,
+            turno:          t.turno,
+          }),
+        })
+        const json = await res.json()
+        if (!res.ok) {
+          setUnifError(`Turno ${t.turno}: ${json.error ?? 'Error'}`)
+          return
+        }
+      }
+
+      setRegistrandoUnif(null)
+      router.refresh()
+    } catch {
+      setUnifError('Error de conexión')
+    } finally {
+      setUnifLoading(false)
+    }
+  }
+
   return (
     <div>
       {/* Filtros */}
-      <div className="bg-white rounded-2xl shadow p-4 mb-6 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Fecha</label>
-          <input
-            type="date"
-            value={fecha}
-            onChange={e => setFecha(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Sucursal</label>
-          <select
-            value={sucursalId}
-            onChange={e => setSucursal(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      <div className="bg-white rounded-2xl shadow p-4 mb-6">
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Fecha</label>
+            <input
+              type="date"
+              value={fecha}
+              onChange={e => setFecha(e.target.value)}
+              disabled={rangoActivo}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Desde</label>
+            <input
+              type="date"
+              value={desde}
+              onChange={e => setDesde(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Hasta</label>
+            <input
+              type="date"
+              value={hasta}
+              onChange={e => setHasta(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Sucursal</label>
+            <select
+              value={sucursalId}
+              onChange={e => setSucursal(e.target.value)}
+              disabled={Boolean(desde && hasta)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              <option value="">Todas</option>
+              {sucursales.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              Empleado {Boolean(desde && hasta) && <span className="text-red-500">*</span>}
+            </label>
+            <select
+              value={empleadoId}
+              onChange={e => setEmpleado(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Todos</option>
+              {empleados.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.apellido}, {emp.nombre}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={aplicarFiltros}
+            disabled={isPending}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-60"
           >
-            <option value="">Todas</option>
-            {sucursales.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-          </select>
+            {isPending ? 'Buscando...' : 'Buscar'}
+          </button>
+          {(rangoActivo || sucursalId || empleadoId || desde || hasta) && (
+            <button
+              onClick={limpiarFiltros}
+              disabled={isPending}
+              className="border border-slate-300 text-slate-600 hover:bg-slate-50 px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-60"
+            >
+              Limpiar
+            </button>
+          )}
         </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Empleado</label>
-          <select
-            value={empleadoId}
-            onChange={e => setEmpleado(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">Todos</option>
-            {empleados.map(emp => (
-              <option key={emp.id} value={emp.id}>{emp.apellido}, {emp.nombre}</option>
-            ))}
-          </select>
-        </div>
-        <button
-          onClick={aplicarFiltros}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors"
-        >
-          Buscar
-        </button>
+        {filtroError && (
+          <p className="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2 mt-3">{filtroError}</p>
+        )}
       </div>
 
       {/* Tabla */}
       <div className="bg-white rounded-2xl shadow overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
+          {rangoActivo ? (
+          <table className="w-full text-sm tabular-nums">
+            <thead className="bg-slate-50 sticky top-0 z-10">
               <tr>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Empleado</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Sucursal</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Turno</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Entrada</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Salida</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Estado</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Extras</th>
-                <th className="text-left px-6 py-3 text-gray-500 font-medium">Acción</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Fecha</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Turno</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Entrada</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Salida</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Estado</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Extras</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Acción</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
+              {registros.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-6 py-10 text-center text-slate-400">
+                    Sin registros para este período
+                  </td>
+                </tr>
+              )}
+              {registros.map(registro => (
+                <tr key={registro.id} className="hover:bg-slate-50/50">
+                  <td className="px-6 py-4 text-slate-700 font-mono">{registro.fecha}</td>
+                  <td className="px-6 py-4 text-slate-600 capitalize font-medium">{registro.turno ?? '—'}</td>
+                  <td className="px-6 py-4 font-mono text-slate-700">
+                    {registro.hora_entrada ? formatHora(registro.hora_entrada) : '—'}
+                  </td>
+                  <td className="px-6 py-4 font-mono text-slate-700">
+                    {registro.hora_salida ? formatHora(registro.hora_salida) : '—'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {registro.tarde ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Tardanza</span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">A tiempo</span>
+                      )}
+                      {registro.egreso_anticipado && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Retiro ant.</span>
+                      )}
+                      {registro.salida_autocompletada && (
+                        <span className="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">Salida autocompletada</span>
+                      )}
+                      {registro.editado_por && (
+                        <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">Editado</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-slate-600">
+                    {registro.minutos_extra > 0 ? formatMinutos(registro.minutos_extra) : '—'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex gap-2 items-center flex-wrap">
+                      <button
+                        onClick={() => abrirEdicion(registro)}
+                        className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => eliminarRegistro(registro.id)}
+                        className="text-red-500 hover:text-red-700 text-sm font-medium"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          ) : (
+          <table className="w-full text-sm tabular-nums">
+            <thead className="bg-slate-50 sticky top-0 z-10">
+              <tr>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Empleado</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Sucursal</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Registro</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Turno</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Entrada</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Salida</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Estado</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Extras</th>
+                <th className="text-left px-6 py-3 text-slate-500 font-medium">Acción</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
               {rowsToRender.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-6 py-10 text-center text-gray-400">
+                  <td colSpan={9} className="px-6 py-10 text-center text-slate-400">
                     Sin registros para este filtro
                   </td>
                 </tr>
               )}
-              {rowsToRender.map(({ emp, sucursalNombre, turno, registro, just, isFirstOfEmployee, rowSpan }, index) => {
+              {rowsToRender.map(({ emp, sucursalNombre, turno, registro, just, isFirstOfEmployee, rowSpan, turnosAMostrar }, index) => {
                 const uniqueKey = `${emp.id}-${turno}`
+                const tieneRegistroUnificado = turnosAMostrar.includes('mañana') || turnosAMostrar.includes('tarde')
+                const esTurnoUnificable = turno === 'mañana' || turno === 'tarde'
                 return (
-                  <tr key={uniqueKey} className={`hover:bg-gray-50/50 ${isFirstOfEmployee && index > 0 ? 'border-t border-gray-200' : ''}`}>
+                  <tr key={uniqueKey} className={`hover:bg-slate-50/50 ${isFirstOfEmployee && index > 0 ? 'border-t border-slate-200' : ''}`}>
                     {isFirstOfEmployee && (
                       <>
                         <td
@@ -476,16 +735,28 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                         >
                           {emp.apellido}, {emp.nombre}
                         </td>
-                        <td rowSpan={rowSpan} className="px-6 py-4 text-gray-600 align-middle">
+                        <td rowSpan={rowSpan} className="px-6 py-4 text-slate-600 align-middle">
                           {sucursalNombre}
+                        </td>
+                        <td rowSpan={rowSpan} className="px-6 py-4 align-middle">
+                          {tieneRegistroUnificado ? (
+                            <button
+                              onClick={() => abrirRegistroUnificado(emp)}
+                              className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
+                            >
+                              Registrar
+                            </button>
+                          ) : (
+                            <span className="text-slate-300 text-xs">—</span>
+                          )}
                         </td>
                       </>
                     )}
-                    <td className="px-6 py-4 text-gray-600 capitalize font-medium">{turno}</td>
-                    <td className="px-6 py-4 font-mono text-gray-700">
+                    <td className="px-6 py-4 text-slate-600 capitalize font-medium">{turno}</td>
+                    <td className="px-6 py-4 font-mono text-slate-700">
                       {registro?.hora_entrada ? formatHora(registro.hora_entrada) : '—'}
                     </td>
-                    <td className="px-6 py-4 font-mono text-gray-700">
+                    <td className="px-6 py-4 font-mono text-slate-700">
                       {registro?.hora_salida ? formatHora(registro.hora_salida) : '—'}
                     </td>
                     <td className="px-6 py-4">
@@ -500,13 +771,16 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                             {registro.egreso_anticipado && (
                               <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">Retiro ant.</span>
                             )}
+                            {registro.salida_autocompletada && (
+                              <span className="px-1.5 py-0.5 rounded text-xs bg-purple-100 text-purple-700">Salida autocompletada</span>
+                            )}
                             {registro.editado_por && (
                               <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">Editado</span>
                             )}
                           </>
                         ) : (
                           <>
-                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-600">
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-600">
                               Ausente
                             </span>
                             {(() => {
@@ -533,7 +807,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                         )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
+                    <td className="px-6 py-4 text-slate-600">
                       {registro && registro.minutos_extra > 0 ? formatMinutos(registro.minutos_extra) : '—'}
                     </td>
                     <td className="px-6 py-4">
@@ -563,12 +837,14 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                           </>
                         ) : (
                           <>
-                            <button
-                              onClick={() => abrirRegistroIngreso(emp, turno)}
-                              className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
-                            >
-                              Registrar
-                            </button>
+                            {!esTurnoUnificable && (
+                              <button
+                                onClick={() => abrirRegistroIngreso(emp, turno)}
+                                className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
+                              >
+                                Registrar
+                              </button>
+                            )}
                             <button
                               onClick={() => abrirJustificacion(emp, turno)}
                               className="text-violet-600 hover:text-violet-800 text-sm font-medium"
@@ -584,6 +860,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
               })}
             </tbody>
           </table>
+          )}
         </div>
       </div>
 
@@ -598,12 +875,12 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
       {justificando && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold text-gray-800 mb-1">Justificación de inasistencia</h2>
-            <p className="text-gray-500 text-sm mb-4">{justificando.nombre} — {fecha}</p>
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Justificación de inasistencia</h2>
+            <p className="text-slate-500 text-sm mb-4">{justificando.nombre} — {fecha}</p>
 
             <form onSubmit={guardarJustificacion} className="space-y-4">
               <div>
-                <p className="text-xs font-medium text-gray-700 mb-2">Estado de inasistencia</p>
+                <p className="text-xs font-medium text-slate-700 mb-2">Estado de inasistencia</p>
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <button
                     type="button"
@@ -611,7 +888,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
                       justForm.justificada && justForm.tipo === 'regular'
                         ? 'bg-green-50 border-green-200 text-green-700 font-semibold'
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     Justificada (Común)
@@ -622,7 +899,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
                       !justForm.justificada
                         ? 'bg-red-50 border-red-200 text-red-700 font-semibold'
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     Injustificada
@@ -633,7 +910,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
                       justForm.justificada && justForm.tipo === 'feriado'
                         ? 'bg-blue-50 border-blue-200 text-blue-700 font-semibold'
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     Feriado
@@ -644,14 +921,14 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all text-center ${
                       justForm.justificada && justForm.tipo === 'media_jornada'
                         ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold'
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     Media Jornada
                   </button>
                 </div>
                 
-                <div className="text-xs text-gray-505 bg-gray-50 rounded-lg p-2.5">
+                <div className="text-xs text-slate-505 bg-slate-50 rounded-lg p-2.5">
                   {justForm.justificada && justForm.tipo === 'regular' && (
                     <span>No pierde presentismo. Cuenta como inasistencia justificada.</span>
                   )}
@@ -668,13 +945,13 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">
                   Turno a Justificar
                 </label>
                 <select
                   value={justForm.turno}
                   onChange={e => setJustForm(f => ({ ...f, turno: e.target.value as Turno | 'all' }))}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 capitalize"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 capitalize"
                 >
                   <option value="all">Día completo</option>
                   <option value="mañana">Turno Mañana</option>
@@ -684,15 +961,15 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Motivo <span className="text-gray-400">(opcional)</span>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Motivo <span className="text-slate-400">(opcional)</span>
                 </label>
                 <textarea
                   value={justForm.motivo}
                   onChange={e => setJustForm(f => ({ ...f, motivo: e.target.value }))}
                   rows={2}
                   placeholder="Ej: turno médico, feriado nacional, etc."
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
                 />
               </div>
 
@@ -714,7 +991,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                 <button
                   type="button"
                   onClick={() => setJustificando(null)}
-                  className="flex-1 border border-gray-300 rounded-xl py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                  className="flex-1 border border-slate-300 rounded-xl py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                 >
                   Cancelar
                 </button>
@@ -735,10 +1012,10 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
       {registrando && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold text-gray-800 mb-1">
+            <h2 className="text-lg font-bold text-slate-800 mb-1">
               {registrando.tipo === 'ingreso' ? 'Registrar asistencia' : 'Registrar salida'}
             </h2>
-            <p className="text-gray-500 text-sm mb-4">
+            <p className="text-slate-500 text-sm mb-4">
               {registrando.nombre} — {fecha}
             </p>
 
@@ -746,14 +1023,14 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
               {registrando.tipo === 'ingreso' && (
                 <>
                   <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
                       Turno <span className="text-red-500">*</span>
                     </label>
                     <select
                       value={regForm.turno}
                       onChange={e => setRegForm(f => ({ ...f, turno: e.target.value }))}
                       required
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 capitalize"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 capitalize"
                     >
                       {turnosDisponibles.map(t => (
                         <option key={t} value={t}>
@@ -763,7 +1040,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
                       Hora de entrada <span className="text-red-500">*</span>
                     </label>
                     <input
@@ -771,26 +1048,26 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                       value={regForm.hora_entrada}
                       onChange={e => setRegForm(f => ({ ...f, hora_entrada: e.target.value }))}
                       required
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
                 </>
               )}
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">
                   Hora de salida {registrando.tipo === 'salida' && <span className="text-red-500">*</span>}
-                  {registrando.tipo === 'ingreso' && <span className="text-gray-400">(opcional)</span>}
+                  {registrando.tipo === 'ingreso' && <span className="text-slate-400">(opcional)</span>}
                 </label>
                 <input
                   type="time"
                   value={regForm.hora_salida}
                   onChange={e => setRegForm(f => ({ ...f, hora_salida: e.target.value }))}
                   required={registrando.tipo === 'salida'}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">
                   Motivo <span className="text-red-500">*</span>
                 </label>
                 <textarea
@@ -799,7 +1076,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                   rows={2}
                   required
                   placeholder="Ej: sin celular, registro manual..."
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
                 />
               </div>
 
@@ -811,7 +1088,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                 <button
                   type="button"
                   onClick={() => setRegistrando(null)}
-                  className="flex-1 border border-gray-300 rounded-xl py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                  className="flex-1 border border-slate-300 rounded-xl py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                 >
                   Cancelar
                 </button>
@@ -828,22 +1105,123 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
         </div>
       )}
 
+      {/* Modal registro manual unificado (mañana + tarde) */}
+      {registrandoUnif && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Registrar asistencia</h2>
+            <p className="text-slate-500 text-sm mb-4">
+              {registrandoUnif.nombre} — {registrandoUnif.fecha}
+            </p>
+
+            <form onSubmit={guardarRegistroUnificado} className="space-y-4">
+              <div className="border border-slate-200 rounded-xl p-3 space-y-3">
+                <p className="text-xs font-semibold text-slate-700">Turno mañana</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Entrada</label>
+                    <input
+                      type="time"
+                      value={registrandoUnif.manana.hora_entrada}
+                      onChange={e => setRegistrandoUnif(s => s && ({ ...s, manana: { ...s.manana, hora_entrada: e.target.value } }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Salida</label>
+                    <input
+                      type="time"
+                      value={registrandoUnif.manana.hora_salida}
+                      onChange={e => setRegistrandoUnif(s => s && ({ ...s, manana: { ...s.manana, hora_salida: e.target.value } }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border border-slate-200 rounded-xl p-3 space-y-3">
+                <p className="text-xs font-semibold text-slate-700">Turno tarde</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Entrada</label>
+                    <input
+                      type="time"
+                      value={registrandoUnif.tarde.hora_entrada}
+                      onChange={e => setRegistrandoUnif(s => s && ({ ...s, tarde: { ...s.tarde, hora_entrada: e.target.value } }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Salida</label>
+                    <input
+                      type="time"
+                      value={registrandoUnif.tarde.hora_salida}
+                      onChange={e => setRegistrandoUnif(s => s && ({ ...s, tarde: { ...s.tarde, hora_salida: e.target.value } }))}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-400">
+                Dejá un turno vacío si el empleado no trabajó ese turno ese día.
+              </p>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Motivo <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={unifMotivo}
+                  onChange={e => setUnifMotivo(e.target.value)}
+                  rows={2}
+                  required
+                  placeholder="Ej: sin celular, registro manual..."
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                />
+              </div>
+
+              {unifError && (
+                <p className="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2">{unifError}</p>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRegistrandoUnif(null)}
+                  className="flex-1 border border-slate-300 rounded-xl py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={unifLoading}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2 text-sm font-medium transition-colors disabled:opacity-60"
+                >
+                  {unifLoading ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal edición */}
       {editando && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold text-gray-800 mb-1">Editar registro</h2>
-            <p className="text-gray-500 text-sm mb-4">
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Editar registro</h2>
+            <p className="text-slate-500 text-sm mb-4">
               {editando.empleados?.nombre} — {editando.fecha}
             </p>
 
             <form onSubmit={guardarEdicion} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Turno</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Turno</label>
                 <select
                   value={editForm.turno}
                   onChange={e => setEditForm(f => ({ ...f, turno: e.target.value }))}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 capitalize"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 capitalize"
                 >
                   {turnosDisponibles.map(t => (
                     <option key={t} value={t}>
@@ -853,25 +1231,25 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Hora entrada</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Hora entrada</label>
                 <input
                   type="time"
                   value={editForm.hora_entrada}
                   onChange={e => setEditForm(f => ({ ...f, hora_entrada: e.target.value }))}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Hora salida</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Hora salida</label>
                 <input
                   type="time"
                   value={editForm.hora_salida}
                   onChange={e => setEditForm(f => ({ ...f, hora_salida: e.target.value }))}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">
                   Motivo de edición <span className="text-red-500">*</span>
                 </label>
                 <textarea
@@ -879,7 +1257,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                   onChange={e => setEditForm(f => ({ ...f, motivo_edicion: e.target.value }))}
                   rows={2}
                   required
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   placeholder="Motivo obligatorio..."
                 />
               </div>
@@ -892,7 +1270,7 @@ export function AsistenciaClient({ registros, sucursales, empleados, horarios, h
                 <button
                   type="button"
                   onClick={() => setEditando(null)}
-                  className="flex-1 border border-gray-300 rounded-xl py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+                  className="flex-1 border border-slate-300 rounded-xl py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
                 >
                   Cancelar
                 </button>

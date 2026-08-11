@@ -65,6 +65,7 @@ export interface RegistroAsistencia {
   minutos_extra: number
   editado_por: string | null
   motivo_edicion: string | null
+  salida_autocompletada: boolean
   created_at: string
   empleados?: Empleado
 }
@@ -111,5 +112,8 @@ export interface ResumenMensual {
   horasExtraFormato: string
   montoExtra: number
   presentismo: number
+  /** Monto final redondeado al múltiplo de 100 más cercano (el que se paga/liquida). */
   totalLiquidar: number
+  /** Monto final exacto, sin redondear — se conserva para trazabilidad/auditoría. */
+  totalLiquidarExacto: number
 }

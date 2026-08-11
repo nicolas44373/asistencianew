@@ -4,6 +4,16 @@
   "devCommand": "npm run dev",
   "installCommand": "npm install",
   "regions": ["gru1"],
+  "crons": [
+    {
+      "path": "/api/cron/autocompletar-salidas",
+      "schedule": "10 3 * * *"
+    },
+    {
+      "path": "/api/cron/cierre-mensual",
+      "schedule": "20 3 1 * *"
+    }
+  ],
   "headers": [
     {
       "source": "/sw.js",

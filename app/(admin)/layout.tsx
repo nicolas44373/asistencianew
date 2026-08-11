@@ -1,15 +1,7 @@
-import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { BotonLogout } from '@/components/admin/BotonLogout'
-
-const navItems = [
-  { href: '/dashboard',  label: 'Dashboard',  icon: '📊' },
-  { href: '/empleados',  label: 'Empleados',  icon: '👥' },
-  { href: '/asistencia', label: 'Asistencia', icon: '📋' },
-  { href: '/reportes',   label: 'Reportes',   icon: '📈' },
-  { href: '/config',     label: 'Config',     icon: '⚙️' },
-]
+import { Sidebar } from '@/components/admin/Sidebar'
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const supabase = createClient()
@@ -22,42 +14,37 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     .eq('id', user.id)
     .single()
 
+  const iniciales = `${empleado?.nombre?.[0] ?? ''}${empleado?.apellido?.[0] ?? ''}`.toUpperCase()
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Top bar */}
-      <header className="bg-blue-700 text-white px-6 py-3 flex items-center justify-between shadow">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-white rounded-full flex items-center justify-center">
-            <svg className="w-4 h-4 text-blue-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <span className="font-bold text-lg hidden sm:block">Control de Asistencia</span>
+          <div>
+            <span className="font-semibold text-slate-800 text-sm block leading-tight hidden sm:block">Control de Asistencia</span>
+            <span className="text-slate-400 text-xs hidden sm:block">Panel de administración</span>
+          </div>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-blue-200 text-sm hidden md:block">
+        <div className="flex items-center gap-3">
+          <span className="text-slate-500 text-sm hidden md:block">
             {empleado?.nombre} {empleado?.apellido}
           </span>
+          <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center text-xs font-bold shrink-0">
+            {iniciales || '—'}
+          </div>
           <BotonLogout />
         </div>
       </header>
 
       <div className="flex flex-1">
-        {/* Sidebar */}
-        <nav className="w-16 md:w-56 bg-white shadow-sm flex flex-col py-4 shrink-0">
-          {navItems.map(item => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-3 px-4 py-3 text-gray-600 hover:bg-blue-50
-                         hover:text-blue-700 transition-colors text-sm font-medium"
-            >
-              <span className="text-lg w-6 text-center">{item.icon}</span>
-              <span className="hidden md:block">{item.label}</span>
-            </Link>
-          ))}
-        </nav>
+        <Sidebar />
 
         {/* Main content */}
         <main className="flex-1 overflow-auto p-6">

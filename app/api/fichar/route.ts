@@ -4,9 +4,14 @@ import { calcularTarde } from '@/lib/reglas/calcularTarde'
 import { calcularExtra } from '@/lib/reglas/calcularExtra'
 import { calcularExtraEntrada } from '@/lib/reglas/calcularExtraEntrada'
 import { calcularEgresoAnticipado } from '@/lib/reglas/calcularEgresoAnticipado'
+import { dentroDeVentanaCierre } from '@/lib/reglas/dentroDeVentanaCierre'
 import { distanciaMetros } from '@/lib/utils/geo'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
 import type { HorarioSucursal, RegistroAsistencia, Turno } from '@/lib/types/database'
+
+// Ventana anti doble-toque: si una segunda marca llega dentro de este margen desde
+// la anterior, se la trata como duplicado accidental y se ignora (no cierra ni abre nada nuevo).
+const UMBRAL_DUPLICADO_MS = 5_000
 
 export async function POST(request: NextRequest) {
   try {
@@ -185,9 +190,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Sin horario configurado' }, { status: 400 })
     }
 
-    // 8b. Si ya existe un registro abierto hoy (entrada sin salida), cerrarlo directamente
-    //     sin importar en qué ventana de turno estemos ahora.
+    // 8b. Si ya existe un registro abierto hoy (entrada sin salida), intentar cerrarlo.
     //     Esto cubre el caso donde el admin registró la entrada manualmente.
+    //     Solo se cierra si "ahora" está dentro de la ventana válida del turno abierto
+    //     (ver dentroDeVentanaCierre más abajo); si no, se deja incompleto.
     const { data: registroAbierto } = await supabase
       .from('registros_asistencia')
       .select('*')
@@ -199,6 +205,14 @@ export async function POST(request: NextRequest) {
       .maybeSingle()
 
     if (registroAbierto) {
+      // Guard anti doble-toque: si la entrada se registró hace instantes, este segundo
+      // toque casi seguro es un duplicado (doble submit) y no una salida real.
+      // Se ignora sin tocar el registro, en vez de cerrarlo como una salida "flash".
+      const msDesdeEntrada = ahora.getTime() - new Date(registroAbierto.hora_entrada!).getTime()
+      if (msDesdeEntrada < UMBRAL_DUPLICADO_MS) {
+        return NextResponse.json({ tipo: 'duplicado', registro: registroAbierto })
+      }
+
       const localDateNow  = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }))
       const esSabadoAhora = localDateNow.getDay() === 6
 
@@ -223,23 +237,31 @@ export async function POST(request: NextRequest) {
         ?? detectarTurnoActivo(ahora, (horariosSucursal ?? []) as HorarioSucursal[])
         ?? (horariosEfectivos[0] as HorarioSucursal)
 
-      const minutosExtra     = calcularExtra(ahora, horarioDelTurno)
-      const egresoAnticipado = calcularEgresoAnticipado(ahora, horarioDelTurno)
+      // Solo se cierra automáticamente si "ahora" sigue dentro de la ventana válida del
+      // turno (hasta su umbral_extra, ej. 14:30 para la mañana). Si ya se pasó esa
+      // ventana, esta marca NO es la salida de este turno (probablemente el empleado
+      // se olvidó de fichar y volvió para el turno siguiente): se deja el registro
+      // incompleto (hora_salida null) para revisión/edición manual del admin, y se
+      // sigue evaluando más abajo si "ahora" corresponde al inicio de un turno nuevo.
+      if (dentroDeVentanaCierre(ahora, horarioDelTurno)) {
+        const minutosExtra     = calcularExtra(ahora, horarioDelTurno)
+        const egresoAnticipado = calcularEgresoAnticipado(ahora, horarioDelTurno)
 
-      const { data: actualizado, error: updError } = await supabase
-        .from('registros_asistencia')
-        .update({ hora_salida: ahora.toISOString(), minutos_extra: minutosExtra, egreso_anticipado: egresoAnticipado })
-        .eq('id', registroAbierto.id)
-        .select()
-        .single()
+        const { data: actualizado, error: updError } = await supabase
+          .from('registros_asistencia')
+          .update({ hora_salida: ahora.toISOString(), minutos_extra: minutosExtra, egreso_anticipado: egresoAnticipado })
+          .eq('id', registroAbierto.id)
+          .select()
+          .single()
 
-      if (updError) return NextResponse.json({ error: updError.message }, { status: 500 })
+        if (updError) return NextResponse.json({ error: updError.message }, { status: 500 })
 
-      if (!deviceRegistrado) {
-        await supabase.from('empleados').update({ device_id: deviceId }).eq('id', user.id)
+        if (!deviceRegistrado) {
+          await supabase.from('empleados').update({ device_id: deviceId }).eq('id', user.id)
+        }
+
+        return NextResponse.json({ tipo: 'salida', registro: actualizado })
       }
-
-      return NextResponse.json({ tipo: 'salida', registro: actualizado })
     }
 
     // 9. No hay registro abierto: verificar si estamos en una ventana de turno para crear ingreso
@@ -268,8 +290,24 @@ export async function POST(request: NextRequest) {
         .select()
         .single()
 
-      if (insError) return NextResponse.json({ error: insError.message }, { status: 500 })
-      respuesta = NextResponse.json({ tipo: 'ingreso', registro: nuevo })
+      if (insError) {
+        if (insError.code === '23505') {
+          // Carrera: otro toque casi simultáneo (doble-tap) ya creó este registro.
+          // Se devuelve el existente en vez de un error, para no confundir al empleado.
+          const { data: existente } = await supabase
+            .from('registros_asistencia')
+            .select('*')
+            .eq('empleado_id', user.id)
+            .eq('fecha', fechaHoy)
+            .eq('turno', turnoActivo.turno)
+            .single()
+          respuesta = NextResponse.json({ tipo: 'duplicado', registro: existente })
+        } else {
+          return NextResponse.json({ error: insError.message }, { status: 500 })
+        }
+      } else {
+        respuesta = NextResponse.json({ tipo: 'ingreso', registro: nuevo })
+      }
 
     } else {
       respuesta = NextResponse.json({ tipo: 'completo', registro: registroExistente })
@@ -336,6 +374,12 @@ async function manejarFichajeLibre(
   const bloquesCerrados = bloques.filter(b => b.hora_entrada && b.hora_salida)
 
   if (bloqueAbierto) {
+    // Guard anti doble-toque (ver mismo mecanismo en el flujo principal más arriba)
+    const msDesdeEntrada = ahora.getTime() - new Date(bloqueAbierto.hora_entrada!).getTime()
+    if (msDesdeEntrada < UMBRAL_DUPLICADO_MS) {
+      return NextResponse.json({ tipo: 'duplicado', registro: bloqueAbierto })
+    }
+
     // Cerrar el bloque abierto y calcular extra del día
     let totalMs = ahora.getTime() - new Date(bloqueAbierto.hora_entrada!).getTime()
     for (const b of bloquesCerrados) {

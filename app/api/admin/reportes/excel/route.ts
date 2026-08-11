@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { calcularMes } from '@/lib/reglas/calcularMes'
-import { calcularInasistencias, calcularInasistenciasJustificadas } from '@/lib/reglas/calcularInasistencias'
-import { calcularInasistenciasLibre, calcularInasistenciasJustificadasLibre } from '@/lib/reglas/calcularHorasLibres'
-import { parseJustificacionMotivo } from '@/lib/utils/justificaciones'
-import type { HorarioSucursal, HorarioEmpleado, RegistroAsistencia } from '@/lib/types/database'
+import { calcularResumenesPeriodo } from '@/lib/reportes/calcularResumenesPeriodo'
 import ExcelJS from 'exceljs'
 import { format } from 'date-fns-tz'
 
@@ -42,6 +38,9 @@ const BM  = { top: bdr(C.borderMed, 'medium'), bottom: bdr(C.borderMed, 'medium'
 const BGT = { top: bdr(C.greenBord, 'medium'), bottom: bdr(C.greenBord, 'medium'), left: bdr(C.greenBord, 'medium'), right: bdr(C.greenBord, 'medium') }
 
 // ── Columnas por hoja de sucursal ───────────────────────────────────
+// Índices: 0 nombre, 1 dni, 2 sueldo, 3 $/h extra (fórmula), 4 días, 5 tardanzas,
+// 6 inasistencias, 7 hs extra (numérico, fórmula-compatible), 8 monto extra (fórmula),
+// 9 presentismo, 10 total exacto (fórmula), 11 total liquidar redondeado (fórmula MROUND).
 const COLS = [
   { header: 'Apellido y Nombre',  w: 30 },
   { header: 'DNI',                w: 14 },
@@ -53,16 +52,28 @@ const COLS = [
   { header: 'Hs Extra',           w: 11 },
   { header: 'Monto Extra',        w: 18 },
   { header: 'Presentismo',        w: 18 },
+  { header: 'Total Exacto',       w: 16 },
   { header: '★ TOTAL LIQUIDAR',   w: 20 },
 ]
 const NC = COLS.length
 
+// Columnas cuyo valor es una fórmula real de Excel (recalculan solo si se edita
+// el sueldo, las horas extra o el presentismo en la planilla exportada).
+const COL_SUELDO        = 2
+const COL_VALOR_HORA    = 3
+const COL_HS_EXTRA      = 7
+const COL_MONTO_EXTRA   = 8
+const COL_PRESENTISMO   = 9
+const COL_TOTAL_EXACTO  = 10
+const COL_TOTAL_LIQUIDAR = 11
+
 interface EmpData {
   nombre: string; apellido: string; dni: string | null; sueldo: number
+  sucursal: string; rol: string
   diasTrabajados: number; tardanzas: number
   inasistencias: number; inasistenciasJustificadas: number
-  horasExtraFormato: string; montoExtra: number
-  presentismo: number; totalLiquidar: number
+  horasExtraFormato: string; minutosExtraTotal: number; montoExtra: number
+  presentismo: number; totalLiquidar: number; totalLiquidarExacto: number
 }
 interface GroupSummary {
   label: string; empleados: number
@@ -216,7 +227,8 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
 
   // Filas de datos (row 5+)
   data.forEach((emp, idx) => {
-    const row  = ws.getRow(5 + idx)
+    const excelRow = 5 + idx
+    const row  = ws.getRow(excelRow)
     row.height = 18
     const bg   = idx % 2 === 0 ? C.white : C.blueAlt
     const inj  = emp.inasistencias - emp.inasistenciasJustificadas
@@ -224,6 +236,9 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
     const inasTxt = emp.inasistenciasJustificadas > 0
       ? `${emp.inasistencias} (${emp.inasistenciasJustificadas} just.)`
       : emp.inasistencias
+    // Horas extra como fracción de día, para formatear con numFmt '[h]:mm' y
+    // poder referenciarla desde la fórmula de Monto Extra (H*24 = horas).
+    const horasExtraDecimal = emp.minutosExtraTotal / 1440
 
     const values: (string | number | null)[] = [
       `${emp.apellido}, ${emp.nombre}`,
@@ -233,15 +248,16 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
       emp.diasTrabajados,
       emp.tardanzas,
       inasTxt as string | number,
-      emp.horasExtraFormato || '—',
+      horasExtraDecimal,
       emp.montoExtra,
       emp.presentismo,
+      emp.totalLiquidarExacto,
       emp.totalLiquidar,
     ]
 
     values.forEach((val, i) => {
       const c = row.getCell(i + 1)
-      c.value  = val ?? (i === 2 || i === 3 ? 'Sin asignar' : '—')
+      c.value  = val ?? (i === COL_SUELDO || i === COL_VALOR_HORA ? 'Sin asignar' : '—')
       c.fill   = fill(bg)
       c.border = BA
       c.font   = { name: 'Calibri', size: 10, color: { argb: C.darkText } }
@@ -252,35 +268,53 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
         c.alignment = { horizontal: 'left', vertical: 'middle' }
       } else if (i === 1) {
         c.font = { name: 'Calibri', size: 10, color: { argb: C.grayText } }
-      } else if (i === 2) {
+      } else if (i === COL_SUELDO) {
         if (typeof c.value === 'number') { c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' } }
         else { c.font = { name: 'Calibri', size: 9, italic: true, color: { argb: C.grayText } } }
-      } else if (i === 3) {
-        if (typeof c.value === 'number') { c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }; c.font = { name: 'Calibri', size: 9, color: { argb: C.grayText } } }
-        else { c.font = { name: 'Calibri', size: 9, color: { argb: C.grayText } } }
+      } else if (i === COL_VALOR_HORA) {
+        if (typeof c.value === 'number') {
+          c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }; c.font = { name: 'Calibri', size: 9, color: { argb: C.grayText } }
+          // Fórmula: Sueldo Base / 180. Si el admin edita el sueldo en la planilla, recalcula solo.
+          c.value = { formula: `IF(C${excelRow}>0,C${excelRow}/180,0)`, result: vHora ?? 0 }
+        } else {
+          c.font = { name: 'Calibri', size: 9, color: { argb: C.grayText } }
+        }
       } else if (i === 5) {
         if (emp.tardanzas >= 3) { c.fill = fill(C.redBg); c.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.redText } } }
         else if (emp.tardanzas > 0) { c.fill = fill(C.amberBg); c.font = { name: 'Calibri', size: 10, color: { argb: C.amberText } } }
       } else if (i === 6) {
         if (inj >= 1) { c.fill = fill(C.redBg); c.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.redText } } }
         else if (emp.inasistencias > 0) { c.fill = fill(C.amberBg); c.font = { name: 'Calibri', size: 10, color: { argb: C.amberText } } }
-      } else if (i === 7) {
+      } else if (i === COL_HS_EXTRA) {
+        c.numFmt = '[h]:mm'
         if (emp.montoExtra > 0) c.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.accent } }
-      } else if (i === 8) {
+      } else if (i === COL_MONTO_EXTRA) {
         c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }
         if (emp.montoExtra > 0) c.font = { name: 'Calibri', size: 10, color: { argb: C.accent } }
-      } else if (i === 9) {
+        // Fórmula: horas extra (col H, fracción de día × 24 = horas) × $/hora extra (col D)
+        c.value = { formula: `IFERROR((H${excelRow}*24)*D${excelRow},0)`, result: emp.montoExtra }
+      } else if (i === COL_PRESENTISMO) {
         c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }
         if (emp.presentismo > 0) { c.fill = fill(C.greenBg); c.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.greenText } } }
         else { c.fill = fill(C.redBg); c.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.redText } } }
-      } else if (i === 10) {
+      } else if (i === COL_TOTAL_EXACTO) {
+        c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }
+        c.font = { name: 'Calibri', size: 9, italic: true, color: { argb: C.grayText } }
+        // Fórmula: Monto Extra + Presentismo, sin redondear (se conserva para auditoría).
+        c.value = { formula: `I${excelRow}+J${excelRow}`, result: emp.totalLiquidarExacto }
+      } else if (i === COL_TOTAL_LIQUIDAR) {
         c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }
         c.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.navyBg } }
+        // Fórmula: Total Exacto redondeado al múltiplo de 100 más cercano.
+        // MROUND redondea igual que Math.round(x/100)*100 para valores positivos.
+        c.value = { formula: `MROUND(K${excelRow},100)`, result: emp.totalLiquidar }
       }
     })
   })
 
   // Separador y fila de totales
+  const firstDataRow = 5
+  const lastDataRow  = 4 + data.length
   ws.getRow(5 + data.length).height = 4
   const totRow = ws.getRow(6 + data.length)
   totRow.height = 24
@@ -288,6 +322,7 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
   const sumSueldos = data.reduce((s, e) => s + e.sueldo, 0)
   const sumExtra   = data.reduce((s, e) => s + e.montoExtra, 0)
   const sumPres    = data.reduce((s, e) => s + e.presentismo, 0)
+  const sumExacto  = data.reduce((s, e) => s + e.totalLiquidarExacto, 0)
   const sumTotal   = data.reduce((s, e) => s + e.totalLiquidar, 0)
   const sumTards   = data.reduce((s, e) => s + e.tardanzas, 0)
   const sumInasis  = data.reduce((s, e) => s + e.inasistencias, 0)
@@ -296,17 +331,26 @@ function buildGroupSheet(wb: ExcelJS.Workbook, sheetName: string, groupLabel: st
 
   const totVals: (string | number | null)[] = [
     'TOTAL GENERAL', `${data.length} emp.`,
-    sumSueldos, null, null, sumTards, sumInasis, null, sumExtra, sumPres, sumTotal,
+    sumSueldos, null, null, sumTards, sumInasis, null, sumExtra, sumPres, sumExacto, sumTotal,
   ]
   totVals.forEach((val, i) => {
     const c = totRow.getCell(i + 1)
     c.value  = val ?? ''
-    c.fill   = fill(i === 10 ? C.greenTot : C.blueTot)
-    c.border = i === 10 ? BGT : BM
-    c.font   = { name: 'Calibri', size: i === 10 ? 12 : 10, bold: true, color: { argb: C.navyBg } }
+    c.fill   = fill(i === COL_TOTAL_LIQUIDAR ? C.greenTot : C.blueTot)
+    c.border = i === COL_TOTAL_LIQUIDAR ? BGT : BM
+    c.font   = { name: 'Calibri', size: i === COL_TOTAL_LIQUIDAR ? 12 : 10, bold: true, color: { argb: C.navyBg } }
     c.alignment = { horizontal: i === 0 ? 'left' : 'center', vertical: 'middle' }
-    if ([2, 8, 9, 10].includes(i)) { c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' } }
+    if ([COL_SUELDO, COL_MONTO_EXTRA, COL_PRESENTISMO, COL_TOTAL_EXACTO, COL_TOTAL_LIQUIDAR].includes(i)) {
+      c.numFmt = '"$"\\ #,##0.00'; c.alignment = { horizontal: 'right', vertical: 'middle' }
+    }
   })
+
+  // Totales como fórmulas SUM sobre el rango de datos (se recalculan si se edita una fila).
+  totRow.getCell(3).value  = { formula: `SUM(C${firstDataRow}:C${lastDataRow})`, result: sumSueldos }
+  totRow.getCell(COL_MONTO_EXTRA + 1).value   = { formula: `SUM(I${firstDataRow}:I${lastDataRow})`, result: sumExtra }
+  totRow.getCell(COL_PRESENTISMO + 1).value   = { formula: `SUM(J${firstDataRow}:J${lastDataRow})`, result: sumPres }
+  totRow.getCell(COL_TOTAL_EXACTO + 1).value  = { formula: `SUM(K${firstDataRow}:K${lastDataRow})`, result: sumExacto }
+  totRow.getCell(COL_TOTAL_LIQUIDAR + 1).value = { formula: `SUM(L${firstDataRow}:L${lastDataRow})`, result: sumTotal }
 
   // Fila de estadísticas
   const statNum = 8 + data.length
@@ -332,85 +376,24 @@ export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl
   const mes        = searchParams.get('mes') ?? format(new Date(), 'yyyy-MM', { timeZone: TZ })
   const sucursalId = searchParams.get('sucursal_id')
+  const empleadoId = searchParams.get('empleado_id')
 
   const [ano, mesNum] = mes.split('-').map(Number)
   const desde    = `${mes}-01`
   const hasta    = new Date(ano, mesNum, 0).toISOString().split('T')[0]
   const mesLabel = `${MESES_ES[mesNum - 1]} ${ano}`
 
-  let empQuery = supabase.from('empleados').select('*, sucursales(id, nombre)').eq('activo', true).neq('rol', 'admin').order('apellido')
-  if (sucursalId) empQuery = empQuery.eq('sucursal_id', sucursalId)
-
-  const [
-    { data: empleados },
-    { data: registros },
-    { data: config },
-    { data: horariosSuc },
-    { data: horariosEmp },
-    { data: justificaciones },
-  ] = await Promise.all([
-    empQuery,
-    supabase.from('registros_asistencia').select('empleado_id, fecha, hora_entrada, tarde, minutos_extra, turno').gte('fecha', desde).lte('fecha', hasta),
-    supabase.from('config_liquidacion').select('monto_presentismo').lte('vigente_desde', hasta).order('vigente_desde', { ascending: false }).limit(1).single(),
-    supabase.from('horarios_sucursal').select('*'),
-    supabase.from('horarios_empleado').select('*'),
-    supabase.from('justificaciones').select('empleado_id, fecha, justificada, motivo').gte('fecha', desde).lte('fecha', hasta),
-  ])
-
-  const montoPresentismo = config ? Number(config.monto_presentismo) : 0
-
-  const horPorSuc = new Map<string, HorarioSucursal[]>()
-  for (const h of (horariosSuc ?? []) as HorarioSucursal[]) {
-    if (!horPorSuc.has(h.sucursal_id)) horPorSuc.set(h.sucursal_id, [])
-    horPorSuc.get(h.sucursal_id)!.push(h)
-  }
-  const horPorEmp = new Map<string, HorarioEmpleado[]>()
-  for (const h of (horariosEmp ?? []) as HorarioEmpleado[]) {
-    if (!horPorEmp.has(h.empleado_id)) horPorEmp.set(h.empleado_id, [])
-    horPorEmp.get(h.empleado_id)!.push(h)
-  }
-
-  // ── Calcular datos por empleado ────────────────────────────────
-  const empData = (empleados ?? []).map(emp => {
-    const regs    = ((registros ?? []) as RegistroAsistencia[]).filter(r => r.empleado_id === emp.id)
-    const sueldo  = Number(emp.sueldo ?? 0)
-    const pers    = horPorEmp.get(emp.id) ?? []
-    const rawHorEf = pers.length > 0 ? pers : (emp.sucursal_id ? horPorSuc.get(emp.sucursal_id) ?? [] : [])
-    const esJuanBJusto = (emp.sucursales as { nombre: string } | null)?.nombre.toLowerCase().includes('juan b')
-    const horEf = esJuanBJusto ? rawHorEf.filter(h => h.turno !== 'unico') : rawHorEf
-    const fi      = new Date((emp as { created_at: string }).created_at).toLocaleDateString('sv-SE', { timeZone: TZ })
-    const justifiedRows = (justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && j.justificada)
-    const fferiadoMJ = new Set<string>()
-    const fjust = new Set<string>()
-    justifiedRows.forEach((j: any) => {
-      const parsed = parseJustificacionMotivo(j.motivo)
-      const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
-      if (parsed.tipo === 'feriado' || parsed.tipo === 'media_jornada') {
-        fferiadoMJ.add(key)
-      } else {
-        fjust.add(key)
-      }
-    })
-    const finjust = new Set<string>();
-    (justificaciones ?? []).filter((j: any) => j.empleado_id === emp.id && !j.justificada).forEach((j: any) => {
-      const parsed = parseJustificacionMotivo(j.motivo)
-      const key = parsed.turno && parsed.turno !== 'all' ? `${j.fecha}_${parsed.turno}` : j.fecha
-      finjust.add(key)
-    })
-    const isLibre = emp.rol === 'administracion'
-    const inas    = isLibre ? calcularInasistenciasLibre(regs, mes, fi, finjust, fferiadoMJ) : calcularInasistencias(regs, horEf, mes, fi, finjust, fferiadoMJ)
-    const inasJ   = isLibre ? calcularInasistenciasJustificadasLibre(regs, mes, fjust, fi, fferiadoMJ) : calcularInasistenciasJustificadas(regs, horEf, mes, fjust, fi, fferiadoMJ)
-    const res     = calcularMes(regs, sueldo, montoPresentismo, inas, inasJ, finjust)
-    return {
-      nombre: emp.nombre, apellido: emp.apellido, dni: emp.dni as string | null,
-      sucursal: (emp.sucursales as { nombre: string } | null)?.nombre ?? '',
-      rol: (emp as { rol: string }).rol,
-      sueldo, diasTrabajados: res.diasTrabajados, tardanzas: res.tardanzas,
-      inasistencias: res.inasistencias, inasistenciasJustificadas: res.inasistenciasJustificadas,
-      horasExtraFormato: res.horasExtraFormato, montoExtra: res.montoExtra,
-      presentismo: res.presentismo, totalLiquidar: res.totalLiquidar,
-    }
-  })
+  // ── Calcular datos por empleado (lógica compartida con el cierre automático) ──
+  const resumenes = await calcularResumenesPeriodo(supabase, mes, sucursalId, empleadoId)
+  const empData: EmpData[] = resumenes.map(r => ({
+    nombre: r.nombre, apellido: r.apellido, dni: r.dni,
+    sucursal: r.sucursalNombre,
+    rol: r.rol,
+    sueldo: r.sueldo, diasTrabajados: r.diasTrabajados, tardanzas: r.tardanzas,
+    inasistencias: r.inasistencias, inasistenciasJustificadas: r.inasistenciasJustificadas,
+    horasExtraFormato: r.horasExtraFormato, minutosExtraTotal: r.minutosExtraTotal, montoExtra: r.montoExtra,
+    presentismo: r.presentismo, totalLiquidar: r.totalLiquidar, totalLiquidarExacto: r.totalLiquidarExacto,
+  }))
 
   // ── Agrupar ────────────────────────────────────────────────────
   // rol=administracion → hoja "Administración"; resto → hoja por sucursal

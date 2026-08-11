@@ -20,6 +20,7 @@ function registro(overrides: Partial<RegistroAsistencia>): RegistroAsistencia {
     minutos_extra: 0,
     editado_por: null,
     motivo_edicion: null,
+    salida_autocompletada: false,
     created_at: '2024-01-15T11:15:00Z',
     ...overrides,
   }

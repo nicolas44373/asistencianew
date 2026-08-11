@@ -1,21 +1,31 @@
 import type { RegistroAsistencia } from '@/lib/types/database'
 import { fechaHoyLocal } from '@/lib/utils/tiempo'
 
+type HorarioDia = { es_sabado: boolean; turno: string }
+type ResolverHorariosDia = (fecha: string) => HorarioDia[]
+
+/**
+ * `horarios` acepta un array estático (compatibilidad con el uso anterior, mismo horario
+ * para todo el mes) o una función `(fecha) => horarios` para resolver el horario vigente
+ * en esa fecha puntual — necesario cuando el empleado cambió de sucursal a mitad de mes,
+ * para no evaluar fechas pasadas contra el horario de la sucursal actual.
+ */
+function normalizarResolver(horarios: HorarioDia[] | ResolverHorariosDia): ResolverHorariosDia {
+  return typeof horarios === 'function' ? horarios : () => horarios
+}
+
 /**
  * Itera sobre todos los días laborales de un mes y llama al callback
  * con (fecha, turnosEsperados, registrosDelDia) para cada día que debía trabajar.
  */
 function iterarDiasLaborales(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean; turno: string }[],
+  horarios: HorarioDia[] | ResolverHorariosDia,
   mes: string,
   fechaIngreso: string | undefined,
   callback: (fecha: string, turnosEsperados: string[], registrosDelDia: RegistroAsistencia[]) => void
 ) {
-  if (horarios.length === 0) return
-
-  const tieneHorarioSemana = horarios.some(h => !h.es_sabado)
-  const tieneHorarioSabado = horarios.some(h => h.es_sabado)
+  const resolver = normalizarResolver(horarios)
 
   const [year, month] = mes.split('-').map(Number)
   const hoyStr = fechaHoyLocal()
@@ -34,6 +44,13 @@ function iterarDiasLaborales(
     if (fechaStr < primerDiaStr) continue
     if (fechaStr >= hoyStr) break
 
+    // Horario vigente para esta fecha puntual (puede variar si cambió de sucursal en el mes)
+    const horariosDia = resolver(fechaStr)
+    if (horariosDia.length === 0) continue
+
+    const tieneHorarioSemana = horariosDia.some(h => !h.es_sabado)
+    const tieneHorarioSabado = horariosDia.some(h => h.es_sabado)
+
     const diaSemana = new Date(year, month - 1, dia).getDay()
 
     const esSabado = diaSemana === 6
@@ -44,7 +61,7 @@ function iterarDiasLaborales(
     if (!esDiaLaboral) continue
 
     // Turnos esperados para este día
-    const turnosEsperados = horarios
+    const turnosEsperados = horariosDia
       .filter(h => h.es_sabado === esSabado)
       .map(h => h.turno)
 
@@ -63,7 +80,7 @@ function iterarDiasLaborales(
  */
 export function calcularInasistencias(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean; turno: string }[],
+  horarios: HorarioDia[] | ResolverHorariosDia,
   mes: string,
   fechaIngreso?: string,
   fechasInjustificadasExplicitas: Set<string> = new Set(),
@@ -123,7 +140,7 @@ export function calcularInasistencias(
  */
 export function calcularInasistenciasJustificadas(
   registros: RegistroAsistencia[],
-  horarios: { es_sabado: boolean; turno: string }[],
+  horarios: HorarioDia[] | ResolverHorariosDia,
   mes: string,
   fechasJustificadas: Set<string>,
   fechaIngreso?: string,
@@ -158,4 +175,3 @@ export function calcularInasistenciasJustificadas(
 
   return Math.round(totalJustificadas * 100) / 100
 }
-

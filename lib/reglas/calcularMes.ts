@@ -1,5 +1,6 @@
 import type { RegistroAsistencia, ResumenMensual } from '@/lib/types/database'
 import { formatMinutos } from '@/lib/utils/tiempo'
+import { redondearAlMultiploDe100 } from '@/lib/reglas/redondearMonto'
 
 const HORAS_MES = 180
 
@@ -38,8 +39,12 @@ export function calcularMes(
 
   const inasistenciasInjustificadas = inasistencias - inasistenciasJustificadas
   const pierdePresntismo = tardanzas >= 3 || inasistenciasInjustificadas > 0 || fechasInjustificadasExplicitas.size > 0
-  const presentismo      = pierdePresntismo ? 0 : montoPresentismo
-  const totalLiquidar    = parseFloat((montoExtra + presentismo).toFixed(2))
+  const presentismo         = pierdePresntismo ? 0 : montoPresentismo
+  // El redondeo al múltiplo de 100 se aplica solo acá, sobre el monto final a pagar.
+  // montoExtra y presentismo quedan sin redondear para no perder precisión ni acumular
+  // diferencias en cálculos intermedios.
+  const totalLiquidarExacto = parseFloat((montoExtra + presentismo).toFixed(2))
+  const totalLiquidar       = redondearAlMultiploDe100(totalLiquidarExacto)
 
   return {
     diasTrabajados,
@@ -51,5 +56,6 @@ export function calcularMes(
     montoExtra,
     presentismo,
     totalLiquidar,
+    totalLiquidarExacto,
   }
 }

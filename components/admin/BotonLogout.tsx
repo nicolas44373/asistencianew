@@ -15,7 +15,7 @@ export function BotonLogout() {
   return (
     <button
       onClick={cerrarSesion}
-      className="text-blue-200 hover:text-white text-sm transition-colors"
+      className="text-slate-400 hover:text-red-600 text-sm font-medium transition-colors"
     >
       Salir
     </button>

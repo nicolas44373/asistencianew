@@ -35,6 +35,21 @@ export function fechaHoyLocal(): string {
   return format(toZonedTime(new Date(), TZ), 'yyyy-MM-dd', { timeZone: TZ })
 }
 
+/** Retorna la fecha local de "ayer" como string "YYYY-MM-DD" */
+export function fechaAyerLocal(): string {
+  const hoyLocal = toZonedTime(new Date(), TZ)
+  const ayerLocal = new Date(hoyLocal)
+  ayerLocal.setDate(ayerLocal.getDate() - 1)
+  return format(ayerLocal, 'yyyy-MM-dd', { timeZone: TZ })
+}
+
+/** Retorna el mes local anterior al actual como string "YYYY-MM" */
+export function mesAnteriorLocal(): string {
+  const hoyLocal = toZonedTime(new Date(), TZ)
+  const mesAnterior = new Date(hoyLocal.getFullYear(), hoyLocal.getMonth() - 1, 1)
+  return format(mesAnterior, 'yyyy-MM', { timeZone: TZ })
+}
+
 /** Formatea minutos totales como "Xh Ymin" */
 export function formatMinutos(minutos: number): string {
   if (minutos === 0) return '0 min'

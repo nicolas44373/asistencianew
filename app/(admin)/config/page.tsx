@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { ConfigClient } from './ConfigClient'
+import { PageHeader } from '@/components/admin/PageHeader'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,7 +24,7 @@ export default async function ConfigPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Configuración</h1>
+      <PageHeader eyebrow="Panel de administración" title="Configuración" subtitle="Horarios de sucursal y presentismo" />
       <ConfigClient
         configActual={actual}
         historial={configs ?? []}
