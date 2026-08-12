@@ -387,7 +387,7 @@ async function manejarFichajeLibre(
     }
     const [y, m, d] = fechaHoy.split('-').map(Number)
     const isSabado = new Date(y, m - 1, d).getDay() === 6
-    const metaMinutos = isSabado ? 330 : 480
+    const metaMinutos = isSabado ? 330 : 510
     const totalMin  = Math.floor(totalMs / 60_000)
     const extra     = Math.max(0, totalMin - metaMinutos)
 

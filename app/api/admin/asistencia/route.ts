@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
         }
       }
       const totalMin = Math.floor(totalMs / 60_000)
-      const metaMinutos = esSabado ? 330 : 480
+      const metaMinutos = esSabado ? 330 : 510
       minutosExtra = Math.max(0, totalMin - metaMinutos)
 
       // Resetear extras de bloques previos ya cerrados

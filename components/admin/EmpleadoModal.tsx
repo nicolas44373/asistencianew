@@ -614,7 +614,7 @@ export function EmpleadoModal({ empleadoId, onClose }: Props) {
                                 ) : dia.estaCompleto ? (
                                   <Chip text={formatMinutos(dia.minutosTotal)} color="green" />
                                 ) : (
-                                  <Chip text={`${formatMinutos(dia.minutosTotal)} / ${isSab ? '5h 30m' : '8h'}`} color="orange" />
+                                  <Chip text={`${formatMinutos(dia.minutosTotal)} / ${isSab ? '5h 30m' : '8h 30m'}`} color="orange" />
                                 )}
                                 {dia.minutosExtra > 0 && (
                                   <Chip text={`+${formatMinutos(dia.minutosExtra)}`} color="blue" />

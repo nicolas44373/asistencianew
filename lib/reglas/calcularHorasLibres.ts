@@ -13,7 +13,7 @@ export interface ResumenDiaLibre {
  * Calcula las horas trabajadas en un día para un empleado sin horario fijo.
  * Suma la duración de todos los bloques cerrados (entrada + salida).
  * Extra = max(0, total - meta).
- * Lunes a viernes: meta = 480 min. Sábado: meta = 330 min.
+ * Lunes a viernes: meta = 510 min (8:30 hs). Sábado: meta = 330 min.
  */
 export function calcularDiaLibre(registros: RegistroAsistencia[], fecha: string): Omit<ResumenDiaLibre, 'fecha' | 'registros'> {
   let totalMs = 0
@@ -29,7 +29,7 @@ export function calcularDiaLibre(registros: RegistroAsistencia[], fecha: string)
 
   const [y, m, d] = fecha.split('-').map(Number)
   const isSabado = new Date(y, m - 1, d).getDay() === 6
-  const metaMinutos = isSabado ? 330 : 480
+  const metaMinutos = isSabado ? 330 : 510
 
   const minutosTotal = Math.floor(totalMs / 60_000)
   const minutosExtra = Math.max(0, minutosTotal - metaMinutos)
